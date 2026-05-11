@@ -11,6 +11,7 @@ import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.web.Router;
+import io.vertx.ext.web.client.WebClient;
 import io.vertx.junit5.VertxExtension;
 import io.vertx.junit5.VertxTestContext;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,7 +45,7 @@ class MessageHandlerTest {
         router.post("/:prefix/message").handler(new MessageHandler(new LocalSessionStore()));
 
         testServer.requestHandler(router).listen().onSuccess(server -> {
-            io.vertx.ext.web.client.WebClient client = io.vertx.ext.web.client.WebClient.create(vertx);
+            WebClient client = WebClient.create(vertx);
             client.post(server.actualPort(), "localhost", "/demo/message")
                 .addQueryParam("sessionId", "nonexistent")
                 .sendJsonObject(new JsonObject().put("jsonrpc", "2.0").put("id", 1))
@@ -66,7 +67,7 @@ class MessageHandlerTest {
         router.post("/:prefix/message").handler(new MessageHandler(sessionStore));
 
         testServer.requestHandler(router).listen().onSuccess(server -> {
-            io.vertx.ext.web.client.WebClient client = io.vertx.ext.web.client.WebClient.create(vertx);
+            WebClient client = WebClient.create(vertx);
             client.post(server.actualPort(), "localhost", "/demo/message")
                 .sendJsonObject(new JsonObject().put("jsonrpc", "2.0").put("id", 1))
                 .onSuccess(resp -> testContext.verify(() -> {
@@ -94,7 +95,7 @@ class MessageHandlerTest {
         router.post("/:prefix/message").handler(new MessageHandler(sessionStore));
 
         testServer.requestHandler(router).listen().onSuccess(server -> {
-            io.vertx.ext.web.client.WebClient client = io.vertx.ext.web.client.WebClient.create(vertx);
+            WebClient client = WebClient.create(vertx);
             client.post(server.actualPort(), "localhost", "/demo/message")
                 .addQueryParam("sessionId", "test-session")
                 .sendJsonObject(new JsonObject()

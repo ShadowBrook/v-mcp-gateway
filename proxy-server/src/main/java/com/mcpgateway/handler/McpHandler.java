@@ -4,7 +4,6 @@ import com.mcpgateway.config.ServerConfig;
 import com.mcpgateway.transport.Transport;
 import com.mcpgateway.transport.TransportFactory;
 import io.vertx.core.Handler;
-import io.vertx.core.http.HttpMethod;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.web.RoutingContext;
 import org.slf4j.Logger;
