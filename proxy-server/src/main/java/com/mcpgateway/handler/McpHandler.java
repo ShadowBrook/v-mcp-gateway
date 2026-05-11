@@ -1,6 +1,8 @@
 package com.mcpgateway.handler;
 
 import com.mcpgateway.config.ServerConfig;
+import com.mcpgateway.domain.mcp.JsonRpcError;
+import com.mcpgateway.domain.mcp.JsonRpcResponse;
 import com.mcpgateway.transport.Transport;
 import com.mcpgateway.transport.TransportFactory;
 import io.vertx.core.Handler;
@@ -72,12 +74,10 @@ public class McpHandler implements Handler<RoutingContext> {
                 })
                 .onFailure(err -> {
                     log.error("Transport error for prefix '{}': {}", prefix, err.getMessage());
-                    JsonObject errorResponse = new JsonObject()
-                        .put("jsonrpc", "2.0")
-                        .put("id", request.getValue("id"))
-                        .put("error", new JsonObject()
-                            .put("code", -32603)
-                            .put("message", "Transport error: " + err.getMessage()));
+                    JsonObject errorResponse = JsonRpcResponse.failure(
+                        request.getValue("id"),
+                        JsonRpcError.of(-32603, "Transport error: " + err.getMessage())
+                    ).toJson();
                     ctx.response()
                         .setStatusCode(502)
                         .putHeader("Content-Type", "application/json")

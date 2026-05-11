@@ -1,4 +1,4 @@
-package com.mcpgateway;
+package com.mcpgateway.domain;
 
 import java.util.Map;
 

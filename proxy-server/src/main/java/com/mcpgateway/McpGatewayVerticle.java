@@ -9,7 +9,9 @@ import com.mcpgateway.transport.Transport;
 import com.mcpgateway.transport.TransportFactory;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Promise;
+import io.vertx.core.http.HttpMethod;
 import io.vertx.ext.web.Router;
+import io.vertx.ext.web.handler.CorsHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,6 +61,14 @@ public class McpGatewayVerticle extends AbstractVerticle {
 
     private Router setupRouter() {
         Router router = Router.router(vertx);
+
+        // CORS — allow all for development
+        router.route().handler(CorsHandler.create("*")
+            .allowedMethod(HttpMethod.GET)
+            .allowedMethod(HttpMethod.POST)
+            .allowedMethod(HttpMethod.OPTIONS)
+            .allowedMethod(HttpMethod.DELETE)
+            .allowedHeader("*"));
 
         // Global middleware: log requests
         router.route().handler(ctx -> {

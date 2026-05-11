@@ -66,7 +66,6 @@ public class ConfigLoader {
         });
     }
 
-    @SuppressWarnings("unchecked")
     private ServerConfig parseServerConfig(Map<?, ?> map) {
         String name = getString(map, "name", "unnamed");
         String type = getString(map, "type", "sse");
