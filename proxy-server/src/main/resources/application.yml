@@ -1,0 +1,23 @@
+server:
+  port: 8080
+
+mcp:
+  servers:
+    # SSE MCP server (e.g., Spring AI WebMVC MCP server)
+    - name: sse-demo
+      type: sse
+      url: http://localhost:7080/sse
+
+    # Streamable HTTP MCP server
+    # - name: streamable-demo
+    #   type: streamable-http
+    #   url: http://localhost:3000/mcp
+
+    # Stdio MCP server
+    # - name: stdio-demo
+    #   type: stdio
+    #   command: node
+    #   args:
+    #     - /path/to/mcp-server.js
+    #   env:
+    #     KEY: value
