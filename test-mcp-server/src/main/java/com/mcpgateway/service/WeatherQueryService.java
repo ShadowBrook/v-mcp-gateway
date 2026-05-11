@@ -23,9 +23,9 @@ public class WeatherQueryService {
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
 
-    public WeatherQueryService() {
-        this.restClient = RestClient.builder().build();
-        this.objectMapper = new ObjectMapper();
+    public WeatherQueryService(RestClient restClient, ObjectMapper objectMapper) {
+        this.restClient = restClient;
+        this.objectMapper = objectMapper;
     }
 
     @Tool(name = "getWeather", description = "查询指定地点1-7天天气预报，包含天气、温度、风力、降水、日出日落等信息")

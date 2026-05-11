@@ -17,9 +17,8 @@ public class IpSearchService {
 
     private final RestClient restClient;
 
-    public IpSearchService() {
-        this.restClient = RestClient.builder()
-                .build();
+    public IpSearchService(RestClient restClient) {
+        this.restClient = restClient;
     }
 
 
