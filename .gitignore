@@ -14,12 +14,13 @@ target/
 *.iml
 *.ipr
 
-### VS Code ###
+
 .vscode/
 
-### Mac OS ###
 .DS_Store
 docs
 .mvn
 .claude
 target
+dist
+node_modules
