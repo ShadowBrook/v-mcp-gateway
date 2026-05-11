@@ -1,5 +1,6 @@
-package com.mcpgateway;
+package com.mcpgateway.service;
 
+import com.mcpgateway.domain.IpQueryResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;

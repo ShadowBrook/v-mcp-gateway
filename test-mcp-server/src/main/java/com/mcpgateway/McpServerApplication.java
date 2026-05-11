@@ -1,5 +1,7 @@
 package com.mcpgateway;
 
+import com.mcpgateway.service.IpSearchService;
+import com.mcpgateway.service.WeatherQueryService;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.boot.SpringApplication;
@@ -14,8 +16,10 @@ public class McpServerApplication {
 	}
 
 	@Bean
-	public ToolCallbackProvider ipLocationTools(IpSearchService ipSearchService) {
-		return MethodToolCallbackProvider.builder().toolObjects(ipSearchService).build();
+	public ToolCallbackProvider mcpTools(IpSearchService ipSearchService, WeatherQueryService weatherQueryService) {
+		return MethodToolCallbackProvider.builder()
+			.toolObjects(ipSearchService, weatherQueryService)
+			.build();
 	}
 
 }

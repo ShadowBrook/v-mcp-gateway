@@ -1,6 +1,7 @@
 package com.mcpgateway.handler;
 
-import com.mcpgateway.session.GatewaySession;
+import com.mcpgateway.domain.mcp.JsonRpcError;
+import com.mcpgateway.domain.mcp.JsonRpcResponse;
 import com.mcpgateway.session.SessionStore;
 import io.vertx.core.Handler;
 import io.vertx.core.json.JsonObject;
@@ -59,12 +60,10 @@ public class MessageHandler implements Handler<RoutingContext> {
                         })
                         .onFailure(err -> {
                             log.error("Transport error for session {}: {}", sessionId, err.getMessage());
-                            JsonObject errorResponse = new JsonObject()
-                                .put("jsonrpc", "2.0")
-                                .put("id", request.getValue("id"))
-                                .put("error", new JsonObject()
-                                    .put("code", -32603)
-                                    .put("message", "Transport error: " + err.getMessage()));
+                            JsonObject errorResponse = JsonRpcResponse.failure(
+                                request.getValue("id"),
+                                JsonRpcError.of(-32603, "Transport error: " + err.getMessage())
+                            ).toJson();
                             session.sendSse("message", errorResponse.encode());
                             ctx.response()
                                 .setStatusCode(202)
