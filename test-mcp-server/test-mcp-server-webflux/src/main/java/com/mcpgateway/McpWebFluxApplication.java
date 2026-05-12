@@ -9,17 +9,16 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 
 @SpringBootApplication
-public class McpServerApplication {
+public class McpWebFluxApplication {
 
-	public static void main(String[] args) {
-		SpringApplication.run(McpServerApplication.class, args);
-	}
+    public static void main(String[] args) {
+        SpringApplication.run(McpWebFluxApplication.class, args);
+    }
 
-	@Bean
-	public ToolCallbackProvider mcpTools(IpSearchService ipSearchService, WeatherQueryService weatherQueryService) {
-		return MethodToolCallbackProvider.builder()
-			.toolObjects(ipSearchService, weatherQueryService)
-			.build();
-	}
-
+    @Bean
+    public ToolCallbackProvider mcpTools(IpSearchService ipSearchService, WeatherQueryService weatherQueryService) {
+        return MethodToolCallbackProvider.builder()
+            .toolObjects(ipSearchService, weatherQueryService)
+            .build();
+    }
 }
