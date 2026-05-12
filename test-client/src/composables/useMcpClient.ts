@@ -38,8 +38,11 @@ export function useMcpClient() {
       const base = url.replace(/\/$/, '');
       if (transportType === 'streamable-http') {
         const t = new StreamableHTTPClientTransport(new URL(`${base}/${prefix}/mcp`));
+        t.onerror = (err) => addLog('err', `Transport error: ${err.message}`);
         const c = new Client({ name: 'mcp-gateway-test', version: '1.0.0' }, CLIENT_OPTIONS);
+        addLog('sys', `Connecting to ${base}/${prefix}/mcp ...`);
         await c.connect(t);
+        addLog('sys', `Connected, session: ${(t as any).sessionId || '(none)'}`);
         client.value = c;
       } else {
         const t = new SSEClientTransport(new URL(`${base}/${prefix}/sse`));

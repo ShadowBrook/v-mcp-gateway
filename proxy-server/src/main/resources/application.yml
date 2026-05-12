@@ -7,6 +7,9 @@ mcp:
     - name: sse-demo
       type: sse
       url: http://localhost:7080/sse
+    - name: sse-demo-flux
+      type: streamable-http
+      url: http://localhost:7081/mcp
 
     # Streamable HTTP MCP server
     # - name: streamable-demo
