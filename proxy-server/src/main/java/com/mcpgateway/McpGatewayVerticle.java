@@ -8,6 +8,7 @@ import com.mcpgateway.session.SessionStore;
 import com.mcpgateway.transport.Transport;
 import com.mcpgateway.transport.TransportFactory;
 import io.vertx.core.AbstractVerticle;
+import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.ext.web.Router;
@@ -18,7 +19,6 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 
 public class McpGatewayVerticle extends AbstractVerticle {
 
@@ -68,7 +68,9 @@ public class McpGatewayVerticle extends AbstractVerticle {
             .allowedMethod(HttpMethod.POST)
             .allowedMethod(HttpMethod.OPTIONS)
             .allowedMethod(HttpMethod.DELETE)
-            .allowedHeader("*"));
+            .allowedHeader("*")
+            .exposedHeader("Mcp-Session-Id")
+            .exposedHeader("Content-Type"));
 
         // Global middleware: log requests
         router.route().handler(ctx -> {
@@ -87,8 +89,10 @@ public class McpGatewayVerticle extends AbstractVerticle {
         // Message endpoint
         router.post("/:prefix/message").handler(new MessageHandler(sessionStore));
 
-        // Streamable HTTP endpoint
-        router.route("/:prefix/mcp").handler(new McpHandler(transportFactory, serverConfigs));
+        // Streamable HTTP endpoints: GET for SSE receive stream, POST for sending
+        Map<String, Transport> mcpTransports = new ConcurrentHashMap<>();
+        router.get("/:prefix/mcp").handler(new McpStreamHandler(transportFactory, serverConfigs, mcpTransports));
+        router.post("/:prefix/mcp").handler(new McpHandler(transportFactory, serverConfigs, mcpTransports));
 
         return router;
     }
@@ -110,9 +114,9 @@ public class McpGatewayVerticle extends AbstractVerticle {
     @Override
     public void stop(Promise<Void> stopPromise) {
         log.info("Shutting down MCP Gateway...");
-        List<io.vertx.core.Future<Void>> stops = new java.util.ArrayList<>();
+        List<Future<Void>> stops = new java.util.ArrayList<>();
         sseTransports.values().forEach(t -> stops.add(t.stop()));
-        io.vertx.core.Future.all(stops)
+        Future.all(stops)
             .onComplete(ar -> {
                 log.info("All transports stopped");
                 stopPromise.complete();

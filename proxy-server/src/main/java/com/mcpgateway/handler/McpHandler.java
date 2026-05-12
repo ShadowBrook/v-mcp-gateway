@@ -1,8 +1,6 @@
 package com.mcpgateway.handler;
 
 import com.mcpgateway.config.ServerConfig;
-import com.mcpgateway.domain.mcp.JsonRpcError;
-import com.mcpgateway.domain.mcp.JsonRpcResponse;
 import com.mcpgateway.transport.Transport;
 import com.mcpgateway.transport.TransportFactory;
 import io.vertx.core.Handler;
@@ -12,7 +10,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 public class McpHandler implements Handler<RoutingContext> {
 
@@ -20,11 +17,13 @@ public class McpHandler implements Handler<RoutingContext> {
 
     private final TransportFactory transportFactory;
     private final Map<String, ServerConfig> serverConfigs;
-    private final Map<String, Transport> transports = new ConcurrentHashMap<>();
+    private final Map<String, Transport> transports;
 
-    public McpHandler(TransportFactory transportFactory, Map<String, ServerConfig> serverConfigs) {
+    public McpHandler(TransportFactory transportFactory, Map<String, ServerConfig> serverConfigs,
+                      Map<String, Transport> transports) {
         this.transportFactory = transportFactory;
         this.serverConfigs = serverConfigs;
+        this.transports = transports;
     }
 
     @Override
@@ -36,6 +35,18 @@ public class McpHandler implements Handler<RoutingContext> {
                 .setStatusCode(404)
                 .putHeader("Content-Type", "application/json")
                 .end(new JsonObject().put("error", "No MCP server configured for prefix: " + prefix).encode());
+            return;
+        }
+
+        // SSE-type servers must use GET /:prefix/sse for endpoint discovery;
+        // POST /:prefix/mcp is only for Streamable HTTP servers.
+        if ("sse".equals(serverConfig.type())) {
+            ctx.response()
+                .setStatusCode(400)
+                .putHeader("Content-Type", "application/json")
+                .end(new JsonObject()
+                    .put("error", "SSE endpoint discovery required — connect via GET /" + prefix + "/sse")
+                    .encode());
             return;
         }
 
@@ -57,32 +68,16 @@ public class McpHandler implements Handler<RoutingContext> {
                 return;
             }
 
-            // Get or create transport lazily
+            // Get or create transport lazily, keyed by prefix.
+            // The transport manages its own backend session internally.
             Transport transport = transports.computeIfAbsent(prefix, k -> {
                 Transport t = transportFactory.create(serverConfig);
                 t.start().onFailure(err ->
-                    log.error("Failed to start transport for prefix '{}': {}", prefix, err.getMessage()));
+                    log.error("Failed to start transport for '{}': {}", k, err.getMessage()));
                 return t;
             });
 
-            transport.send(request)
-                .onSuccess(response -> {
-                    ctx.response()
-                        .setStatusCode(200)
-                        .putHeader("Content-Type", "application/json")
-                        .end(response.encode());
-                })
-                .onFailure(err -> {
-                    log.error("Transport error for prefix '{}': {}", prefix, err.getMessage());
-                    JsonObject errorResponse = JsonRpcResponse.failure(
-                        request.getValue("id"),
-                        JsonRpcError.of(-32603, "Transport error: " + err.getMessage())
-                    ).toJson();
-                    ctx.response()
-                        .setStatusCode(502)
-                        .putHeader("Content-Type", "application/json")
-                        .end(errorResponse.encode());
-                });
+            transport.sendStreaming(request, ctx.response());
         }).onFailure(err -> {
             ctx.response()
                 .setStatusCode(400)
