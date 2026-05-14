@@ -2,7 +2,7 @@ package com.mcpgateway.handler;
 
 import com.mcpgateway.domain.mcp.JsonRpcError;
 import com.mcpgateway.domain.mcp.JsonRpcResponse;
-import com.mcpgateway.session.SessionStore;
+import com.mcpgateway.service.StateManager;
 import io.vertx.core.Handler;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.web.RoutingContext;
@@ -13,10 +13,10 @@ public class MessageHandler implements Handler<RoutingContext> {
 
     private static final Logger log = LoggerFactory.getLogger(MessageHandler.class);
 
-    private final SessionStore sessionStore;
+    private final StateManager stateManager;
 
-    public MessageHandler(SessionStore sessionStore) {
-        this.sessionStore = sessionStore;
+    public MessageHandler(StateManager stateManager) {
+        this.stateManager = stateManager;
     }
 
     @Override
@@ -30,9 +30,8 @@ public class MessageHandler implements Handler<RoutingContext> {
             return;
         }
 
-        sessionStore.get(sessionId)
+        stateManager.getSession(sessionId)
             .onSuccess(session -> {
-                // Read request body
                 ctx.request().body().onSuccess(body -> {
                     JsonObject request;
                     try {
@@ -45,14 +44,11 @@ public class MessageHandler implements Handler<RoutingContext> {
                         return;
                     }
 
-                    // Forward to transport
                     session.transport().send(request)
                         .onSuccess(response -> {
-                            // Send response back to client via SSE
                             if (response.containsKey("jsonrpc")) {
                                 session.sendSse("message", response.encode());
                             }
-                            // Acknowledge HTTP request
                             ctx.response()
                                 .setStatusCode(202)
                                 .putHeader("Content-Type", "application/json")

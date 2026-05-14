@@ -1,8 +1,7 @@
 package com.mcpgateway.handler;
 
-import com.mcpgateway.session.GatewaySession;
-import com.mcpgateway.session.LocalSessionStore;
-import com.mcpgateway.session.SessionStore;
+import com.mcpgateway.service.StateManager;
+import com.mcpgateway.session.impl.LocalSessionStore;
 import com.mcpgateway.transport.Transport;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
@@ -18,31 +17,37 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import java.util.Collections;
+
 import static org.mockito.Mockito.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 @ExtendWith(VertxExtension.class)
 class MessageHandlerTest {
 
-    private SessionStore sessionStore;
+    private StateManager stateManager;
     private Transport mockTransport;
     private HttpServerResponse mockSseResponse;
-    private GatewaySession session;
 
     @BeforeEach
-    void setUp() {
+    void setUp(Vertx vertx) {
         mockTransport = mock(Transport.class);
         mockSseResponse = mock(HttpServerResponse.class);
-        sessionStore = new LocalSessionStore();
-        session = new GatewaySession("test-session", "demo", mockTransport, mockSseResponse);
-        sessionStore.create("demo", "test-session", session);
+        var sessionStore = new LocalSessionStore();
+        stateManager = new StateManager(
+            Collections.emptyMap(),
+            Collections.emptyList(),
+            null,
+            sessionStore,
+            vertx);
+        stateManager.createSession("demo", "test-session", mockTransport, mockSseResponse);
     }
 
     @Test
     void shouldReturn404ForMissingSession(Vertx vertx, VertxTestContext testContext) {
         HttpServer testServer = vertx.createHttpServer(new HttpServerOptions().setPort(0));
         Router router = Router.router(vertx);
-        router.post("/:prefix/message").handler(new MessageHandler(new LocalSessionStore()));
+        router.post("/:prefix/message").handler(new MessageHandler(stateManager));
 
         testServer.requestHandler(router).listen().onSuccess(server -> {
             WebClient client = WebClient.create(vertx);
@@ -64,7 +69,7 @@ class MessageHandlerTest {
     void shouldReturn400ForMissingSessionId(Vertx vertx, VertxTestContext testContext) {
         HttpServer testServer = vertx.createHttpServer(new HttpServerOptions().setPort(0));
         Router router = Router.router(vertx);
-        router.post("/:prefix/message").handler(new MessageHandler(sessionStore));
+        router.post("/:prefix/message").handler(new MessageHandler(stateManager));
 
         testServer.requestHandler(router).listen().onSuccess(server -> {
             WebClient client = WebClient.create(vertx);
@@ -92,7 +97,7 @@ class MessageHandlerTest {
 
         HttpServer testServer = vertx.createHttpServer(new HttpServerOptions().setPort(0));
         Router router = Router.router(vertx);
-        router.post("/:prefix/message").handler(new MessageHandler(sessionStore));
+        router.post("/:prefix/message").handler(new MessageHandler(stateManager));
 
         testServer.requestHandler(router).listen().onSuccess(server -> {
             WebClient client = WebClient.create(vertx);

@@ -3,7 +3,8 @@ package com.mcpgateway;
 import com.mcpgateway.config.AppConfig;
 import com.mcpgateway.config.ServerConfig;
 import com.mcpgateway.handler.*;
-import com.mcpgateway.session.LocalSessionStore;
+import com.mcpgateway.service.StateManager;
+import com.mcpgateway.session.impl.LocalSessionStore;
 import com.mcpgateway.session.SessionStore;
 import com.mcpgateway.transport.Transport;
 import com.mcpgateway.transport.TransportFactory;
@@ -26,9 +27,9 @@ public class McpGatewayVerticle extends AbstractVerticle {
 
     private final AppConfig appConfig;
     private final Map<String, ServerConfig> serverConfigs = new ConcurrentHashMap<>();
-    private final Map<String, Transport> sseTransports = new ConcurrentHashMap<>();
     private TransportFactory transportFactory;
     private SessionStore sessionStore;
+    private StateManager stateManager;
 
     public McpGatewayVerticle(AppConfig appConfig) {
         this.appConfig = appConfig;
@@ -39,10 +40,11 @@ public class McpGatewayVerticle extends AbstractVerticle {
         transportFactory = new TransportFactory(vertx);
         sessionStore = new LocalSessionStore();
 
-        // Build server config map by name
         for (ServerConfig sc : appConfig.servers()) {
             serverConfigs.put(sc.name(), sc);
         }
+
+        stateManager = new StateManager(serverConfigs, appConfig.tools(), transportFactory, sessionStore, vertx);
 
         Router router = setupRouter();
 
@@ -52,7 +54,6 @@ public class McpGatewayVerticle extends AbstractVerticle {
             .listen(port)
             .onSuccess(server -> {
                 log.info("MCP Gateway listening on port {}", server.actualPort());
-                // Start transports that need pre-starting (e.g., stdio)
                 startTransports();
                 startPromise.complete();
             })
@@ -62,7 +63,6 @@ public class McpGatewayVerticle extends AbstractVerticle {
     private Router setupRouter() {
         Router router = Router.router(vertx);
 
-        // CORS — allow all for development
         router.route().handler(CorsHandler.create("*")
             .allowedMethod(HttpMethod.GET)
             .allowedMethod(HttpMethod.POST)
@@ -72,27 +72,22 @@ public class McpGatewayVerticle extends AbstractVerticle {
             .exposedHeader("Mcp-Session-Id")
             .exposedHeader("Content-Type"));
 
-        // Global middleware: log requests
-        router.route().handler(ctx -> {
-            log.debug("{} {} from {}", ctx.request().method(), ctx.request().uri(), ctx.request().remoteAddress());
-            ctx.next();
-        });
+        router.route().handler(new LoggingHandler());
 
-        // Health check
         router.get("/health_check").handler(HealthHandler.create());
 
-        // SSE endpoints: prefix in path (:prefix/sse) or query param (/sse?prefix=X)
-        SseHandler sseHandler = new SseHandler(transportFactory, sessionStore, serverConfigs);
-        router.get("/:prefix/sse").handler(sseHandler);
-        router.get("/sse").handler(sseHandler);
+        router.get("/:prefix/sse").handler(new SseHandler(stateManager));
+        router.get("/sse").handler(new SseHandler(stateManager));
 
-        // Message endpoint
-        router.post("/:prefix/message").handler(new MessageHandler(sessionStore));
+        router.post("/:prefix/message").handler(new MessageHandler(stateManager));
 
-        // Streamable HTTP endpoints: GET for SSE receive stream, POST for sending
-        Map<String, Transport> mcpTransports = new ConcurrentHashMap<>();
-        router.get("/:prefix/mcp").handler(new McpStreamHandler(transportFactory, serverConfigs, mcpTransports));
-        router.post("/:prefix/mcp").handler(new McpHandler(transportFactory, serverConfigs, mcpTransports));
+        router.get("/:prefix/mcp").handler(new McpStreamHandler(stateManager));
+        router.post("/:prefix/mcp").handler(new McpHandler(stateManager));
+
+        // Standalone local-tool endpoint with no backend MCP server required
+        router.get("/mcp").handler(new LocalToolHandler(stateManager));
+        router.post("/mcp").handler(new LocalToolHandler(stateManager));
+        router.delete("/mcp").handler(new LocalToolHandler(stateManager));
 
         return router;
     }
@@ -102,10 +97,7 @@ public class McpGatewayVerticle extends AbstractVerticle {
             if (sc.isStdio()) {
                 Transport transport = transportFactory.create(sc);
                 transport.start()
-                    .onSuccess(v -> {
-                        log.info("Stdio transport '{}' started", sc.name());
-                        sseTransports.put(sc.name(), transport);
-                    })
+                    .onSuccess(v -> log.info("Stdio transport '{}' started", sc.name()))
                     .onFailure(err -> log.error("Failed to start stdio transport '{}': {}", sc.name(), err.getMessage()));
             }
         }
@@ -115,7 +107,7 @@ public class McpGatewayVerticle extends AbstractVerticle {
     public void stop(Promise<Void> stopPromise) {
         log.info("Shutting down MCP Gateway...");
         List<Future<Void>> stops = new java.util.ArrayList<>();
-        sseTransports.values().forEach(t -> stops.add(t.stop()));
+        stateManager.activeTransports().forEach(t -> stops.add(t.stop()));
         Future.all(stops)
             .onComplete(ar -> {
                 log.info("All transports stopped");

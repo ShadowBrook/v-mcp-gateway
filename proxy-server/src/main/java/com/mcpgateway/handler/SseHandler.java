@@ -1,10 +1,8 @@
 package com.mcpgateway.handler;
 
 import com.mcpgateway.config.ServerConfig;
-import com.mcpgateway.session.GatewaySession;
-import com.mcpgateway.session.SessionStore;
+import com.mcpgateway.service.StateManager;
 import com.mcpgateway.transport.Transport;
-import com.mcpgateway.transport.TransportFactory;
 import io.vertx.core.Handler;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.json.JsonObject;
@@ -18,20 +16,14 @@ public class SseHandler implements Handler<RoutingContext> {
 
     private static final Logger log = LoggerFactory.getLogger(SseHandler.class);
 
-    private final TransportFactory transportFactory;
-    private final SessionStore sessionStore;
-    private final java.util.Map<String, ServerConfig> serverConfigs;
+    private final StateManager stateManager;
 
-    public SseHandler(TransportFactory transportFactory, SessionStore sessionStore,
-                      java.util.Map<String, ServerConfig> serverConfigs) {
-        this.transportFactory = transportFactory;
-        this.sessionStore = sessionStore;
-        this.serverConfigs = serverConfigs;
+    public SseHandler(StateManager stateManager) {
+        this.stateManager = stateManager;
     }
 
     @Override
     public void handle(RoutingContext ctx) {
-        // Extract prefix from path param (/:prefix/sse) or query param (/sse?prefix=X)
         String pathPrefix = ctx.pathParam("prefix");
         String queryPrefix = ctx.request().getParam("prefix");
         final String prefix = (pathPrefix != null && !pathPrefix.isBlank()) ? pathPrefix : queryPrefix;
@@ -44,7 +36,7 @@ public class SseHandler implements Handler<RoutingContext> {
             return;
         }
 
-        ServerConfig serverConfig = serverConfigs.get(prefix);
+        ServerConfig serverConfig = stateManager.getServerConfig(prefix);
         if (serverConfig == null) {
             ctx.response()
                 .setStatusCode(404)
@@ -56,41 +48,45 @@ public class SseHandler implements Handler<RoutingContext> {
         String sessionId = UUID.randomUUID().toString().replace("-", "");
         HttpServerResponse response = ctx.response();
 
-        // Set up SSE response
         response.setChunked(true);
         response.putHeader("Content-Type", "text/event-stream");
         response.putHeader("Cache-Control", "no-cache");
         response.putHeader("Connection", "keep-alive");
         response.setStatusCode(200);
 
-        // Create transport and start it
-        Transport transport = transportFactory.create(serverConfig);
+        Transport transport = stateManager.getOrCreateTransport(prefix);
+        if (transport == null) {
+            response.setStatusCode(500);
+            response.setChunked(false);
+            response.putHeader("Content-Type", "application/json");
+            response.end(new JsonObject().put("error", "Failed to create transport").encode());
+            return;
+        }
 
         transport.start()
             .onSuccess(v -> {
-                // Create session with SSE response
-                GatewaySession session = new GatewaySession(sessionId, prefix, transport, response);
-                sessionStore.create(prefix, sessionId, session);
+                stateManager.createSession(prefix, sessionId, transport, response)
+                    .onSuccess(session -> {
+                        String endpointUrl = "/" + prefix + "/message?sessionId=" + sessionId;
+                        session.sendSse("endpoint", endpointUrl);
+                        log.info("SSE session {} created for prefix '{}'", sessionId, prefix);
 
-                // Send endpoint event to client
-                String endpointUrl = "/" + prefix + "/message?sessionId=" + sessionId;
-                session.sendSse("endpoint", endpointUrl);
+                        response.closeHandler(v2 -> {
+                            log.info("SSE session {} closed", sessionId);
+                            stateManager.removeSession(sessionId);
+                            transport.stop();
+                        });
 
-                log.info("SSE session {} created for prefix '{}'", sessionId, prefix);
-
-                // Handle client disconnect
-                response.closeHandler(v2 -> {
-                    log.info("SSE session {} closed", sessionId);
-                    sessionStore.remove(sessionId);
-                    transport.stop();
-                });
-
-                // Handle client error
-                response.exceptionHandler(err -> {
-                    log.warn("SSE session {} error: {}", sessionId, err.getMessage());
-                    sessionStore.remove(sessionId);
-                    transport.stop();
-                });
+                        response.exceptionHandler(err -> {
+                            log.warn("SSE session {} error: {}", sessionId, err.getMessage());
+                            stateManager.removeSession(sessionId);
+                            transport.stop();
+                        });
+                    })
+                    .onFailure(err -> {
+                        log.error("Failed to create session: {}", err.getMessage());
+                        response.setStatusCode(500).end();
+                    });
             })
             .onFailure(err -> {
                 log.error("Failed to start transport for prefix '{}': {}", prefix, err.getMessage());

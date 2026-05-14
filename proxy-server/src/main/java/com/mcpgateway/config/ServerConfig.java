@@ -1,6 +1,7 @@
 package com.mcpgateway.config;
 
 import java.util.List;
+import java.util.Map;
 
 public record ServerConfig(
     String name,
@@ -8,7 +9,7 @@ public record ServerConfig(
     String url,
     String command,
     List<String> args,
-    java.util.Map<String, String> env,
+    Map<String, String> env,
     int timeout
 ) {
     public ServerConfig {

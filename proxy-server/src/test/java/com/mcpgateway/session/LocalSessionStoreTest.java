@@ -1,5 +1,6 @@
 package com.mcpgateway.session;
 
+import com.mcpgateway.session.impl.LocalSessionStore;
 import com.mcpgateway.transport.Transport;
 import io.vertx.core.http.HttpServerResponse;
 import org.junit.jupiter.api.BeforeEach;

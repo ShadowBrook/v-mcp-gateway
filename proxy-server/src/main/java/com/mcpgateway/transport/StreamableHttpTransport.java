@@ -7,11 +7,7 @@ import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.http.HttpClient;
-import io.vertx.core.http.HttpClientResponse;
-import io.vertx.core.http.HttpMethod;
-import io.vertx.core.http.HttpServerResponse;
-import io.vertx.core.http.RequestOptions;
+import io.vertx.core.http.*;
 import io.vertx.core.json.JsonObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -325,6 +321,7 @@ public class StreamableHttpTransport implements Transport {
 
     @Override
     public Future<Void> connectStream(HttpServerResponse clientResponse) {
+        log.info("connectStream called for '{}', session: {}", config.name(), backendSessionId.get());
         String url = config.url();
         if (url == null || url.isBlank()) {
             clientResponse.setStatusCode(502).end("Backend URL not configured");
@@ -332,6 +329,22 @@ public class StreamableHttpTransport implements Transport {
         }
 
         Promise<Void> promise = Promise.promise();
+
+        // Send headers and keepalive immediately — don't wait for backend
+        clientResponse.setStatusCode(200)
+            .putHeader("Content-Type", "text/event-stream")
+            .putHeader("Cache-Control", "no-cache")
+            .putHeader("Connection", "keep-alive")
+            .setChunked(true)
+            .write(Buffer.buffer(":ok\n\n"));
+
+        // Handle client disconnect
+        clientResponse.closeHandler(v -> {
+            log.info("Client disconnected SSE stream for '{}'", config.name());
+            doCleanup(clientResponse, promise);
+        });
+
+        // Now connect to backend asynchronously and pipe its stream
         try {
             URI uri = URI.create(url);
             int port = uri.getPort() >= 0 ? uri.getPort() : (uri.getScheme().equals("https") ? 443 : 80);
@@ -356,12 +369,11 @@ public class StreamableHttpTransport implements Transport {
             }
 
             httpClient.request(options)
-                .compose(httpReq -> httpReq.send())
+                .compose(HttpClientRequest::send)
                 .onSuccess(httpResp -> {
                     if (httpResp.statusCode() != 200) {
                         log.warn("Backend GET SSE returned {} for '{}'", httpResp.statusCode(), config.name());
-                        clientResponse.setStatusCode(405).end();
-                        promise.complete();
+                        doCleanup(clientResponse, promise);
                         return;
                     }
 
@@ -370,55 +382,36 @@ public class StreamableHttpTransport implements Transport {
                         backendSessionId.set(newSid);
                     }
 
-                    clientResponse.setStatusCode(200)
-                        .putHeader("Content-Type", "text/event-stream")
-                        .putHeader("Cache-Control", "no-cache")
-                        .putHeader("Connection", "keep-alive")
-                        .setChunked(true);
-
-                    // Pipe backend SSE chunks to client
                     httpResp.handler(chunk -> {
                         if (!clientResponse.ended()) {
                             clientResponse.write(chunk);
                         }
                     });
 
-                    httpResp.endHandler(v -> {
-                        if (!clientResponse.ended()) {
-                            clientResponse.end();
-                        }
-                        promise.complete();
-                    });
-
+                    httpResp.endHandler(v -> doCleanup(clientResponse, promise));
                     httpResp.exceptionHandler(err -> {
                         log.error("Backend SSE stream error for '{}': {}", config.name(), err.getMessage());
-                        if (!clientResponse.ended()) {
-                            clientResponse.end();
-                        }
-                        promise.complete();
-                    });
-
-                    // Handle client disconnect
-                    clientResponse.closeHandler(v -> {
-                        log.info("Client disconnected SSE stream for '{}'", config.name());
-                        promise.complete();
+                        doCleanup(clientResponse, promise);
                     });
                 })
                 .onFailure(err -> {
                     log.error("Failed to connect SSE stream for '{}': {}", config.name(), err.getMessage());
-                    clientResponse.setStatusCode(502)
-                        .putHeader("Content-Type", "application/json")
-                        .end(new JsonObject().put("error", "Failed to connect: " + err.getMessage()).encode());
-                    promise.fail(err);
+                    doCleanup(clientResponse, promise);
                 });
         } catch (Exception e) {
-            clientResponse.setStatusCode(502)
-                .putHeader("Content-Type", "application/json")
-                .end(new JsonObject().put("error", "Invalid URL: " + e.getMessage()).encode());
-            promise.fail(e);
+            log.error("Invalid URL for '{}': {}", config.name(), e.getMessage());
+            doCleanup(clientResponse, promise);
         }
 
         return promise.future();
+    }
+
+
+    private void doCleanup(HttpServerResponse clientResponse, Promise<Void> promise) {
+        if (!clientResponse.ended()) {
+            clientResponse.end();
+        }
+        promise.tryComplete();
     }
 
     @Override

@@ -1,7 +1,8 @@
-package com.mcpgateway.session;
+package com.mcpgateway.session.impl;
 
+import com.mcpgateway.session.GatewaySession;
+import com.mcpgateway.session.SessionStore;
 import io.vertx.core.Future;
-import io.vertx.core.Promise;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;

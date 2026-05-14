@@ -36,18 +36,29 @@ export function useMcpClient() {
     error.value = '';
     try {
       const base = url.replace(/\/$/, '');
+      const endpoint = prefix ? `${base}/${prefix}/mcp` : `${base}/mcp`;
       if (transportType === 'streamable-http') {
-        const t = new StreamableHTTPClientTransport(new URL(`${base}/${prefix}/mcp`));
+        const t = new StreamableHTTPClientTransport(new URL(endpoint));
         t.onerror = (err) => addLog('err', `Transport error: ${err.message}`);
         const c = new Client({ name: 'mcp-gateway-test', version: '1.0.0' }, CLIENT_OPTIONS);
-        addLog('sys', `Connecting to ${base}/${prefix}/mcp ...`);
+        addLog('sys', `Connecting to ${endpoint} ...`);
         await c.connect(t);
+        // Catch all server-pushed notifications (arrive via GET SSE stream)
+        (c as any).fallbackNotificationHandler = async (n: any) => {
+          addLog('res', `Server push: ${n.method} — ${JSON.stringify(n.params ?? {})}`);
+        };
         addLog('sys', `Connected, session: ${(t as any).sessionId || '(none)'}`);
         client.value = c;
       } else {
-        const t = new SSEClientTransport(new URL(`${base}/${prefix}/sse`));
+        const sseEndpoint = prefix ? `${base}/${prefix}/sse` : `${base}/sse`;
+        const t = new SSEClientTransport(new URL(sseEndpoint));
+        t.onerror = (err) => addLog('err', `Transport error: ${err.message}`);
         const c = new Client({ name: 'mcp-gateway-test', version: '1.0.0' }, CLIENT_OPTIONS);
         await c.connect(t);
+        (c as any).fallbackNotificationHandler = async (n: any) => {
+          addLog('res', `Server push: ${n.method} — ${JSON.stringify(n.params ?? {})}`);
+        };
+        addLog('sys', `Connected via SSE, session: ${(t as any).sessionId || '(none)'}`);
         client.value = c;
       }
       connected.value = true;

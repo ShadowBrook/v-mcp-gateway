@@ -59,11 +59,39 @@ public class ConfigLoader {
                     }
                 }
 
-                return new AppConfig(port, servers);
+                // Parse tools (optional)
+                List<ToolConfig> tools = new ArrayList<>();
+                if (mcpObj instanceof Map<?, ?> mcp2) {
+                    Object toolsObj = mcp2.get("tools");
+                    if (toolsObj instanceof List<?> toolList) {
+                        for (Object item : toolList) {
+                            if (item instanceof Map<?, ?> t) {
+                                tools.add(parseToolConfig(t));
+                            }
+                        }
+                    }
+                }
+
+                return new AppConfig(port, servers, tools);
             } catch (IOException e) {
                 throw new RuntimeException("Failed to load config from " + configPath, e);
             }
         });
+    }
+
+    private ToolConfig parseToolConfig(Map<?, ?> map) {
+        String name = getString(map, "name", "unnamed");
+        String description = getString(map, "description", "");
+        String method = getString(map, "method", "GET");
+        String url = getString(map, "url", "");
+        Map<String, String> headers = getMap(map, "headers");
+        String bodyTemplate = getString(map, "bodyTemplate", null);
+        io.vertx.core.json.JsonObject inputSchema = null;
+        Object schema = map.get("inputSchema");
+        if (schema instanceof Map<?, ?> s) {
+            inputSchema = io.vertx.core.json.JsonObject.mapFrom(s);
+        }
+        return new ToolConfig(name, description, method, url, headers, bodyTemplate, inputSchema);
     }
 
     private ServerConfig parseServerConfig(Map<?, ?> map) {
