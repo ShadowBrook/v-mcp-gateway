@@ -3,7 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { ClientOptions } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-import type { CallToolResult, ListToolsResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult, ListToolsResult, ListPromptsResult, GetPromptResult } from '@modelcontextprotocol/sdk/types.js';
 
 const CLIENT_OPTIONS: ClientOptions = { capabilities: { tools: {} } } as ClientOptions;
 
@@ -21,6 +21,8 @@ export function useMcpClient() {
   const error = ref('');
   const tools = ref<any[]>([]);
   const activeToolIdx = ref(-1);
+  const prompts = ref<any[]>([]);
+  const activePromptIdx = ref(-1);
   const logs = ref<LogEntry[]>([]);
 
   function addLog(type: LogEntry['type'], msg: string) {
@@ -77,6 +79,8 @@ export function useMcpClient() {
     connected.value = false;
     tools.value = [];
     activeToolIdx.value = -1;
+    prompts.value = [];
+    activePromptIdx.value = -1;
     addLog('sys', 'Disconnected');
   }
 
@@ -160,9 +164,68 @@ export function useMcpClient() {
     }
   }
 
+  async function listPrompts() {
+    if (!client.value) return;
+    try {
+      const result = await client.value.listPrompts() as ListPromptsResult;
+      addLog('res', `Prompts (${result.prompts.length}):`);
+      for (const p of result.prompts) {
+        const argc = p.arguments?.length ?? 0;
+        addLog('res', `  • ${p.name} — ${p.description || '(no description)'} [${argc} args]`);
+      }
+      prompts.value = result.prompts as any[];
+      if (prompts.value.length > 0) {
+        activePromptIdx.value = 0;
+      }
+    } catch (err: any) {
+      addLog('err', `List prompts failed: ${err.message}`);
+    }
+  }
+
+  function selectPrompt(idx: number) {
+    activePromptIdx.value = idx;
+  }
+
+  function promptArgsToTemplate(args: any[] | undefined): string {
+    if (!args || args.length === 0) return '{}';
+    const obj: Record<string, string> = {};
+    for (const a of args) {
+      obj[a.name] = a.required ? `<${a.name}>` : '';
+    }
+    return JSON.stringify(obj, null, 2);
+  }
+
+  async function getPrompt(name: string, argsStr: string) {
+    if (!client.value) return;
+    if (!name.trim()) { addLog('err', 'Prompt name is required'); return; }
+
+    let args: Record<string, string> | undefined;
+    if (argsStr.trim()) {
+      try { args = JSON.parse(argsStr); }
+      catch { addLog('err', 'Invalid JSON arguments'); return; }
+    }
+
+    addLog('req', `Get prompt: ${name}${args ? `(${JSON.stringify(args)})` : ''}`);
+    try {
+      const result = await client.value.getPrompt({ name, arguments: args }) as GetPromptResult;
+      if (result.description) {
+        addLog('res', `Description: ${result.description}`);
+      }
+      addLog('res', `Messages (${result.messages.length}):`);
+      for (const msg of result.messages) {
+        const content = msg.content as any;
+        const text = content.type === 'text' ? content.text : `[${content.type}]`;
+        addLog('res', `  [${msg.role}] ${text}`);
+      }
+    } catch (err: any) {
+      addLog('err', `Get prompt failed: ${err.message}`);
+    }
+  }
+
   return {
-    client, connected, error, tools, activeToolIdx, logs,
+    client, connected, error, tools, activeToolIdx, prompts, activePromptIdx, logs,
     connect, disconnect, ping, listTools, selectTool, callTool,
+    listPrompts, selectPrompt, getPrompt, promptArgsToTemplate,
     schemaToTemplate, addLog, clearLogs
   };
 }

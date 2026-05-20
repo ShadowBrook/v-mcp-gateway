@@ -40,6 +40,8 @@ public class LocalToolHandler implements Handler<RoutingContext> {
                 case "notifications/initialized" -> respond(ctx, 202, null);
                 case "tools/list" -> handleToolsList(ctx, id);
                 case "tools/call" -> handleToolsCall(ctx, id, request.getJsonObject("params", new JsonObject()));
+                case "prompts/list" -> handlePromptsList(ctx, id);
+                case "prompts/get" -> handlePromptsGet(ctx, id, request.getJsonObject("params", new JsonObject()));
                 case "ping" -> {
                     if (id != null) {
                         var resp = JsonRpcResponse.success(id, new JsonObject());
@@ -112,6 +114,26 @@ public class LocalToolHandler implements Handler<RoutingContext> {
                     JsonRpcError.of(-32603, "Tool execution failed: " + err.getMessage()));
                 respond(ctx, 500, resp.toJson());
             });
+    }
+
+    // ---- prompts/list ----
+
+    private void handlePromptsList(RoutingContext ctx, Object id) {
+        JsonObject result = new JsonObject().put("prompts", new JsonArray());
+        respond(ctx, 200, JsonRpcResponse.success(id, result).toJson());
+    }
+
+    // ---- prompts/get ----
+
+    private void handlePromptsGet(RoutingContext ctx, Object id, JsonObject params) {
+        String name = params.getString("name", "");
+        if (name.isBlank()) {
+            respond(ctx, 200, JsonRpcResponse.failure(id,
+                JsonRpcError.of(-32602, "Missing prompt name")).toJson());
+            return;
+        }
+        respond(ctx, 200, JsonRpcResponse.failure(id,
+            JsonRpcError.of(-32602, "Prompt not found: " + name)).toJson());
     }
 
     private void respond(RoutingContext ctx, int status, JsonObject body) {

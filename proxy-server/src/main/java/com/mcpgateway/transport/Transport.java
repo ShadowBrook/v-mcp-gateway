@@ -1,10 +1,6 @@
 package com.mcpgateway.transport;
 
-import com.mcpgateway.domain.mcp.JsonRpcError;
-import com.mcpgateway.domain.mcp.JsonRpcRequest;
-import com.mcpgateway.domain.mcp.JsonRpcResponse;
-import com.mcpgateway.domain.mcp.PromptSchema;
-import com.mcpgateway.domain.mcp.ToolSchema;
+import com.mcpgateway.domain.mcp.*;
 import io.vertx.core.Future;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.json.JsonArray;
@@ -123,6 +119,67 @@ public interface Transport {
                 return PromptSchema.from(result);
             }
             return null;
+        });
+    }
+
+    /**
+     * Fetches the resource list from the backend MCP server.
+     */
+    default Future<List<ResourceSchema>> fetchResources() {
+        var request = new JsonRpcRequest("2.0", 4, "resources/list", new JsonObject());
+        return send(request.toJson()).map(response -> {
+            List<ResourceSchema> resources = new ArrayList<>();
+            JsonObject result = response.getJsonObject("result");
+            if (result != null) {
+                JsonArray arr = result.getJsonArray("resources");
+                if (arr != null) {
+                    for (int i = 0; i < arr.size(); i++) {
+                        resources.add(ResourceSchema.from(arr.getJsonObject(i)));
+                    }
+                }
+            }
+            return resources;
+        });
+    }
+
+    /**
+     * Fetches a specific resource by URI from the backend MCP server.
+     */
+    default Future<List<ResourceContents>> fetchResource(String uri) {
+        var request = new JsonRpcRequest("2.0", 5, "resources/read",
+            new JsonObject().put("uri", uri));
+        return send(request.toJson()).map(response -> {
+            List<ResourceContents> contents = new ArrayList<>();
+            JsonObject result = response.getJsonObject("result");
+            if (result != null) {
+                JsonArray arr = result.getJsonArray("contents");
+                if (arr != null) {
+                    for (int i = 0; i < arr.size(); i++) {
+                        contents.add(ResourceContents.from(arr.getJsonObject(i)));
+                    }
+                }
+            }
+            return contents;
+        });
+    }
+
+    /**
+     * Fetches the resource template list from the backend MCP server.
+     */
+    default Future<List<ResourceTemplate>> fetchResourceTemplates() {
+        var request = new JsonRpcRequest("2.0", 6, "resources/templates/list", new JsonObject());
+        return send(request.toJson()).map(response -> {
+            List<ResourceTemplate> templates = new ArrayList<>();
+            JsonObject result = response.getJsonObject("result");
+            if (result != null) {
+                JsonArray arr = result.getJsonArray("resourceTemplates");
+                if (arr != null) {
+                    for (int i = 0; i < arr.size(); i++) {
+                        templates.add(ResourceTemplate.from(arr.getJsonObject(i)));
+                    }
+                }
+            }
+            return templates;
         });
     }
 

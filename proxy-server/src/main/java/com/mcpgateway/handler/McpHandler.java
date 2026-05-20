@@ -62,6 +62,9 @@ public class McpHandler implements Handler<RoutingContext> {
                 case "tools/call" -> handleToolsCall(ctx, id, transport, request);
                 case "prompts/list" -> handlePromptsList(ctx, id, transport);
                 case "prompts/get" -> handlePromptsGet(ctx, id, transport, request.getJsonObject("params", new JsonObject()));
+                case "resources/list" -> handleResourcesList(ctx, id, transport);
+                case "resources/read" -> handleResourcesRead(ctx, id, transport, request.getJsonObject("params", new JsonObject()));
+                case "resources/templates/list" -> handleResourceTemplatesList(ctx, id, transport);
                 default -> transport.sendStreaming(request, ctx.response());
             }
         }).onFailure(err ->
@@ -161,6 +164,69 @@ public class McpHandler implements Handler<RoutingContext> {
         } else {
             transport.sendStreaming(request, ctx.response());
         }
+    }
+
+    // ---- resources/list ----
+    private void handleResourcesList(RoutingContext ctx, Object id, Transport transport) {
+        transport.fetchResources()
+            .onSuccess(resources -> {
+                JsonArray arr = new JsonArray();
+                for (ResourceSchema r : resources) {
+                    arr.add(r.toJson());
+                }
+                JsonObject result = new JsonObject().put("resources", arr);
+                respond(ctx, 200, JsonRpcResponse.success(id, result).toJson());
+            })
+            .onFailure(err -> {
+                log.error("Failed to fetch resources: {}", err.getMessage());
+                respond(ctx, 200, JsonRpcResponse.failure(id,
+                    JsonRpcError.of(-32603, "Failed to fetch resources: " + err.getMessage())).toJson());
+            });
+    }
+
+    // ---- resources/read ----
+    private void handleResourcesRead(RoutingContext ctx, Object id, Transport transport, JsonObject params) {
+        String uri = params.getString("uri", "");
+        if (uri.isBlank()) {
+            respond(ctx, 200, JsonRpcResponse.failure(id,
+                JsonRpcError.of(-32602, "Missing resource uri")).toJson());
+            return;
+        }
+        transport.fetchResource(uri)
+            .onSuccess(contents -> {
+                JsonArray arr = new JsonArray();
+                for (ResourceContents rc : contents) {
+                    switch (rc) {
+                        case TextResourceContents trc -> arr.add(trc.toJson());
+                        case BlobResourceContents brc -> arr.add(brc.toJson());
+                    }
+                }
+                JsonObject result = new JsonObject().put("contents", arr);
+                respond(ctx, 200, JsonRpcResponse.success(id, result).toJson());
+            })
+            .onFailure(err -> {
+                log.error("Failed to read resource '{}': {}", uri, err.getMessage());
+                respond(ctx, 200, JsonRpcResponse.failure(id,
+                    JsonRpcError.of(-32603, "Failed to read resource: " + err.getMessage())).toJson());
+            });
+    }
+
+    // ---- resources/templates/list ----
+    private void handleResourceTemplatesList(RoutingContext ctx, Object id, Transport transport) {
+        transport.fetchResourceTemplates()
+            .onSuccess(templates -> {
+                JsonArray arr = new JsonArray();
+                for (ResourceTemplate rt : templates) {
+                    arr.add(rt.toJson());
+                }
+                JsonObject result = new JsonObject().put("resourceTemplates", arr);
+                respond(ctx, 200, JsonRpcResponse.success(id, result).toJson());
+            })
+            .onFailure(err -> {
+                log.error("Failed to fetch resource templates: {}", err.getMessage());
+                respond(ctx, 200, JsonRpcResponse.failure(id,
+                    JsonRpcError.of(-32603, "Failed to fetch resource templates: " + err.getMessage())).toJson());
+            });
     }
 
     private JsonArray toJsonContent(java.util.List<Content> content) {

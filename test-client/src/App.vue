@@ -13,6 +13,7 @@
         <button class="btn danger" :disabled="!mcp.connected.value" @click="mcp.disconnect()">Disconnect</button>
         <button class="btn" :disabled="!mcp.connected.value" @click="mcp.ping()">Ping</button>
         <button class="btn" :disabled="!mcp.connected.value" @click="mcp.listTools()">List Tools</button>
+        <button class="btn" :disabled="!mcp.connected.value" @click="mcp.listPrompts()">List Prompts</button>
       </section>
 
       <ToolPanel
@@ -24,6 +25,15 @@
         @call="mcp.callTool"
       />
 
+      <PromptPanel
+        :connected="mcp.connected.value"
+        :prompts="mcp.prompts.value"
+        :activePromptIdx="mcp.activePromptIdx.value"
+        :promptArgsToTemplate="mcp.promptArgsToTemplate"
+        @selectPrompt="mcp.selectPrompt"
+        @getPrompt="mcp.getPrompt"
+      />
+
       <LogPanel :logs="mcp.logs.value" @clear="mcp.clearLogs()" />
     </main>
   </div>
@@ -33,6 +43,7 @@
 import { ref, computed } from 'vue';
 import TransportConfig from './components/TransportConfig.vue';
 import ToolPanel from './components/ToolPanel.vue';
+import PromptPanel from './components/PromptPanel.vue';
 import LogPanel from './components/LogPanel.vue';
 import { useMcpClient, type TransportType } from './composables/useMcpClient';
 
