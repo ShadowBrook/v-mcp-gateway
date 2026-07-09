@@ -2,6 +2,7 @@ package com.mcpgateway.transport;
 
 import com.mcpgateway.domain.mcp.*;
 import io.vertx.core.Future;
+import io.vertx.core.Handler;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
@@ -10,10 +11,22 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public interface Transport {
 
     Logger log = LoggerFactory.getLogger(Transport.class);
+
+    AtomicInteger REQUEST_ID_COUNTER = new AtomicInteger(100);
+
+    /**
+     * Generates a unique monotonically increasing request ID for JSON-RPC requests,
+     * avoiding collisions in concurrent scenarios where multiple fetch* calls
+     * may be in flight simultaneously.
+     */
+    default int nextRequestId() {
+        return REQUEST_ID_COUNTER.incrementAndGet();
+    }
 
     String name();
 
@@ -71,7 +84,7 @@ public interface Transport {
      * Fetches the tool list from the backend MCP server.
      */
     default Future<List<ToolSchema>> fetchTools() {
-        var request = new JsonRpcRequest("2.0", 1, "tools/list", new JsonObject());
+        var request = new JsonRpcRequest("2.0", nextRequestId(), "tools/list", new JsonObject());
         return send(request.toJson()).map(response -> {
             List<ToolSchema> tools = new ArrayList<>();
             JsonObject result = response.getJsonObject("result");
@@ -91,7 +104,7 @@ public interface Transport {
      * Fetches the prompt list from the backend MCP server.
      */
     default Future<List<PromptSchema>> fetchPrompts() {
-        var request = new JsonRpcRequest("2.0", 2, "prompts/list", new JsonObject());
+        var request = new JsonRpcRequest("2.0", nextRequestId(), "prompts/list", new JsonObject());
         return send(request.toJson()).map(response -> {
             List<PromptSchema> prompts = new ArrayList<>();
             JsonObject result = response.getJsonObject("result");
@@ -109,24 +122,31 @@ public interface Transport {
 
     /**
      * Fetches a specific prompt by name from the backend MCP server.
+     *
+     * @param name      the prompt name
+     * @param arguments optional arguments for template rendering (may be null)
      */
-    default Future<PromptSchema> fetchPrompt(String name) {
-        var request = new JsonRpcRequest("2.0", 3, "prompts/get",
-            new JsonObject().put("name", name));
-        return send(request.toJson()).map(response -> {
-            JsonObject result = response.getJsonObject("result");
-            if (result != null) {
-                return PromptSchema.from(result);
-            }
-            return null;
-        });
+    default Future<JsonObject> fetchPrompt(String name, JsonObject arguments) {
+        JsonObject params = new JsonObject().put("name", name);
+        if (arguments != null) {
+            params.put("arguments", arguments);
+        }
+        var request = new JsonRpcRequest("2.0", nextRequestId(), "prompts/get", params);
+        return send(request.toJson()).map(response -> response.getJsonObject("result"));
+    }
+
+    /**
+     * Backward-compatible overload without arguments.
+     */
+    default Future<JsonObject> fetchPrompt(String name) {
+        return fetchPrompt(name, null);
     }
 
     /**
      * Fetches the resource list from the backend MCP server.
      */
     default Future<List<ResourceSchema>> fetchResources() {
-        var request = new JsonRpcRequest("2.0", 4, "resources/list", new JsonObject());
+        var request = new JsonRpcRequest("2.0", nextRequestId(), "resources/list", new JsonObject());
         return send(request.toJson()).map(response -> {
             List<ResourceSchema> resources = new ArrayList<>();
             JsonObject result = response.getJsonObject("result");
@@ -146,7 +166,7 @@ public interface Transport {
      * Fetches a specific resource by URI from the backend MCP server.
      */
     default Future<List<ResourceContents>> fetchResource(String uri) {
-        var request = new JsonRpcRequest("2.0", 5, "resources/read",
+        var request = new JsonRpcRequest("2.0", nextRequestId(), "resources/read",
             new JsonObject().put("uri", uri));
         return send(request.toJson()).map(response -> {
             List<ResourceContents> contents = new ArrayList<>();
@@ -167,7 +187,7 @@ public interface Transport {
      * Fetches the resource template list from the backend MCP server.
      */
     default Future<List<ResourceTemplate>> fetchResourceTemplates() {
-        var request = new JsonRpcRequest("2.0", 6, "resources/templates/list", new JsonObject());
+        var request = new JsonRpcRequest("2.0", nextRequestId(), "resources/templates/list", new JsonObject());
         return send(request.toJson()).map(response -> {
             List<ResourceTemplate> templates = new ArrayList<>();
             JsonObject result = response.getJsonObject("result");
@@ -181,6 +201,15 @@ public interface Transport {
             }
             return templates;
         });
+    }
+
+    /**
+     * Sets a handler for backend notifications (JSON-RPC messages without an id).
+     * Default implementation is a no-op; transports that receive server-pushed
+     * notifications (e.g. SSE) should override this.
+     */
+    default void setNotificationHandler(Handler<JsonObject> handler) {
+        // no-op by default
     }
 
     boolean isRunning();

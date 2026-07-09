@@ -14,7 +14,15 @@ public class LocalSessionStore implements SessionStore {
 
     @Override
     public Future<GatewaySession> create(String prefix, String sessionId, GatewaySession session) {
-        sessions.put(sessionId, session);
+        GatewaySession old = sessions.put(sessionId, session);
+        if (old != null && old.sseResponse() != null
+                && !old.sseResponse().closed() && !old.sseResponse().ended()) {
+            try {
+                old.sseResponse().close();
+            } catch (Exception ignored) {
+                // Already closed
+            }
+        }
         return Future.succeededFuture(session);
     }
 

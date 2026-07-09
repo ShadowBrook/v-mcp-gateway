@@ -112,7 +112,7 @@ public class LocalToolHandler implements Handler<RoutingContext> {
                 log.error("Local tool execution failed: {}", err.getMessage());
                 var resp = JsonRpcResponse.failure(id,
                     JsonRpcError.of(-32603, "Tool execution failed: " + err.getMessage()));
-                respond(ctx, 500, resp.toJson());
+                respond(ctx, 200, resp.toJson());
             });
     }
 

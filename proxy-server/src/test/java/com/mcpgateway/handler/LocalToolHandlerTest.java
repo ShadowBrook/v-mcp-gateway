@@ -47,7 +47,9 @@ class LocalToolHandlerTest {
             List.of(testTool),
             null,
             new LocalSessionStore(),
-            vertx);
+            vertx,
+            false,  // trustAll
+            false); // blockInternal — allow localhost for test
     }
 
     // ---- initialize ----

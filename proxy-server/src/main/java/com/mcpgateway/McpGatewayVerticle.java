@@ -44,7 +44,8 @@ public class McpGatewayVerticle extends AbstractVerticle {
             serverConfigs.put(sc.name(), sc);
         }
 
-        stateManager = new StateManager(serverConfigs, appConfig.tools(), transportFactory, sessionStore, vertx);
+        stateManager = new StateManager(serverConfigs, appConfig.tools(), transportFactory, sessionStore, vertx,
+            appConfig.trustAll(), appConfig.blockInternal());
 
         Router router = setupRouter();
 
@@ -63,7 +64,15 @@ public class McpGatewayVerticle extends AbstractVerticle {
     private Router setupRouter() {
         Router router = Router.router(vertx);
 
-        router.route().handler(CorsHandler.create("*")
+        // Build CORS handler from configured origins (default "*")
+        List<String> origins = appConfig.corsOrigins();
+        CorsHandler corsHandler = origins.contains("*")
+            ? CorsHandler.create("*")
+            : CorsHandler.create(origins.get(0));
+        if (!origins.contains("*") && origins.size() > 1) {
+            corsHandler.addOrigins(origins.subList(1, origins.size()));
+        }
+        router.route().handler(corsHandler
             .allowedMethod(HttpMethod.GET)
             .allowedMethod(HttpMethod.POST)
             .allowedMethod(HttpMethod.OPTIONS)
@@ -95,10 +104,14 @@ public class McpGatewayVerticle extends AbstractVerticle {
     private void startTransports() {
         for (ServerConfig sc : appConfig.servers()) {
             if (sc.isStdio()) {
-                Transport transport = transportFactory.create(sc);
-                transport.start()
-                    .onSuccess(v -> log.info("Stdio transport '{}' started", sc.name()))
-                    .onFailure(err -> log.error("Failed to start stdio transport '{}': {}", sc.name(), err.getMessage()));
+                // Use getOrCreateTransport so the transport is registered in StateManager's
+                // internal cache — this ensures it will be stopped on gateway shutdown.
+                Transport transport = stateManager.getOrCreateTransport(sc.name());
+                if (transport != null) {
+                    log.info("Stdio transport '{}' registered and starting", sc.name());
+                } else {
+                    log.error("Failed to create stdio transport '{}'", sc.name());
+                }
             }
         }
     }

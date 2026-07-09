@@ -74,18 +74,29 @@ public class SseHandler implements Handler<RoutingContext> {
                         response.closeHandler(v2 -> {
                             log.info("SSE session {} closed", sessionId);
                             stateManager.removeSession(sessionId);
-                            transport.stop();
+                            // Do NOT stop the shared transport here — it is shared across all
+                            // concurrent sessions for this prefix. Stopping it would break
+                            // other active clients. Transport lifecycle is managed by the
+                            // gateway verticle on shutdown.
                         });
 
                         response.exceptionHandler(err -> {
                             log.warn("SSE session {} error: {}", sessionId, err.getMessage());
                             stateManager.removeSession(sessionId);
-                            transport.stop();
+                            // Do NOT stop the shared transport — see closeHandler comment.
                         });
                     })
                     .onFailure(err -> {
                         log.error("Failed to create session: {}", err.getMessage());
-                        response.setStatusCode(500).end();
+                        // Response already has SSE headers; send error event and close
+                        try {
+                            response.write("event: error\ndata: " +
+                                new JsonObject().put("error", "Failed to create session: " + err.getMessage()).encode() +
+                                "\n\n");
+                        } catch (Exception ignored) {
+                            // Response may already be closed
+                        }
+                        response.end();
                     });
             })
             .onFailure(err -> {

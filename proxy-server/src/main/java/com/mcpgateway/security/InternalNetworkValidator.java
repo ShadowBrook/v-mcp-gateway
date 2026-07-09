@@ -13,11 +13,18 @@ public class InternalNetworkValidator {
             if (host == null) {
                 return true; // Block URLs without a host
             }
-            InetAddress addr = InetAddress.getByName(host);
-            return addr.isLoopbackAddress()
-                || addr.isLinkLocalAddress()
-                || addr.isSiteLocalAddress()
-                || isPrivateIp(addr.getHostAddress());
+            // Resolve ALL IP addresses to mitigate DNS rebinding attacks
+            // where a hostname resolves to different IPs across lookups
+            InetAddress[] addresses = InetAddress.getAllByName(host);
+            for (InetAddress addr : addresses) {
+                if (addr.isLoopbackAddress()
+                    || addr.isLinkLocalAddress()
+                    || addr.isSiteLocalAddress()
+                    || isPrivateIp(addr.getHostAddress())) {
+                    return true;
+                }
+            }
+            return false;
         } catch (UnknownHostException e) {
             return true; // Block unresolvable hosts
         }

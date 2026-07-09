@@ -15,6 +15,8 @@ import io.vertx.ext.web.client.WebClientOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -27,15 +29,21 @@ public class ToolExecutor {
     private final InternalNetworkValidator networkValidator;
     private final boolean blockInternal;
 
-    public ToolExecutor(Vertx vertx, boolean blockInternal) {
+    public ToolExecutor(Vertx vertx, boolean blockInternal, boolean trustAll) {
         this.webClient = WebClient.create(vertx,
             new WebClientOptions()
                 .setSsl(true)
-                .setTrustAll(true)
-                .setFollowRedirects(true));
+                .setTrustAll(trustAll)
+                .setFollowRedirects(true)
+                .setConnectTimeout(5_000)
+                .setIdleTimeout(30));
         this.responseChain = new ResponseHandlerChain();
         this.networkValidator = new InternalNetworkValidator();
         this.blockInternal = blockInternal;
+    }
+
+    public ToolExecutor(Vertx vertx, boolean blockInternal) {
+        this(vertx, blockInternal, false);
     }
 
     public Future<CallToolResult> execute(ToolConfig tool, CallToolParams params) {
@@ -90,6 +98,15 @@ public class ToolExecutor {
     private String resolveUrl(String template, io.vertx.core.json.JsonObject args) {
         String result = template;
         for (Map.Entry<String, Object> entry : args) {
+            String encoded = URLEncoder.encode(String.valueOf(entry.getValue()), StandardCharsets.UTF_8);
+            result = result.replace("{" + entry.getKey() + "}", encoded);
+        }
+        return result;
+    }
+
+    private String resolveTemplate(String template, io.vertx.core.json.JsonObject args) {
+        String result = template;
+        for (Map.Entry<String, Object> entry : args) {
             result = result.replace("{" + entry.getKey() + "}", String.valueOf(entry.getValue()));
         }
         return result;
@@ -97,7 +114,7 @@ public class ToolExecutor {
 
     private Buffer buildBody(ToolConfig tool, CallToolParams params) {
         if (tool.bodyTemplate() != null && !tool.bodyTemplate().isBlank()) {
-            String body = resolveUrl(tool.bodyTemplate(), params.arguments());
+            String body = resolveTemplate(tool.bodyTemplate(), params.arguments());
             return Buffer.buffer(body);
         }
         return Buffer.buffer(params.arguments().encode());

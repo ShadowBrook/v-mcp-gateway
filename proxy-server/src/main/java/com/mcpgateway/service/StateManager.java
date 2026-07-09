@@ -9,6 +9,7 @@ import com.mcpgateway.transport.TransportFactory;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.json.JsonObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,10 +33,20 @@ public class StateManager {
                         TransportFactory transportFactory,
                         SessionStore sessionStore,
                         Vertx vertx) {
+        this(serverConfigs, toolConfigs, transportFactory, sessionStore, vertx, false, true);
+    }
+
+    public StateManager(Map<String, ServerConfig> serverConfigs,
+                        List<ToolConfig> toolConfigs,
+                        TransportFactory transportFactory,
+                        SessionStore sessionStore,
+                        Vertx vertx,
+                        boolean trustAll,
+                        boolean blockInternal) {
         this.serverConfigs = serverConfigs;
         this.transportFactory = transportFactory;
         this.sessionStore = sessionStore;
-        this.toolExecutor = new ToolExecutor(vertx, false);
+        this.toolExecutor = new ToolExecutor(vertx, blockInternal, trustAll);
         for (ToolConfig tc : toolConfigs) {
             this.toolConfigs.put(tc.name(), tc);
         }
@@ -78,8 +89,15 @@ public class StateManager {
         }
         return transports.computeIfAbsent(prefix, k -> {
             Transport t = transportFactory.create(sc);
-            t.start().onFailure(err ->
-                log.error("Failed to start transport for '{}': {}", k, err.getMessage()));
+            // Register notification handler to broadcast backend notifications
+            // to all active gateway sessions for this prefix
+            t.setNotificationHandler(notification -> broadcastNotification(k, notification));
+            t.start()
+                .onFailure(err -> {
+                    log.error("Failed to start transport for '{}': {}", k, err.getMessage());
+                    // Remove failed transport from cache so subsequent calls retry
+                    transports.remove(k, t);
+                });
             return t;
         });
     }
@@ -121,5 +139,22 @@ public class StateManager {
 
     public List<Transport> activeTransports() {
         return List.copyOf(transports.values());
+    }
+
+    private void broadcastNotification(String prefix, JsonObject notification) {
+        sessionStore.listByPrefix(prefix)
+            .onSuccess(sessions -> {
+                for (GatewaySession session : sessions) {
+                    try {
+                        session.sendSse("message", notification.encode());
+                    } catch (Exception e) {
+                        log.warn("Failed to forward notification to session '{}': {}",
+                            session.id(), e.getMessage());
+                    }
+                }
+            })
+            .onFailure(err ->
+                log.warn("Failed to list sessions for notification broadcast: {}",
+                    err.getMessage()));
     }
 }

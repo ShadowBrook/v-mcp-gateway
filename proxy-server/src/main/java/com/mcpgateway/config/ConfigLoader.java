@@ -28,12 +28,17 @@ public class ConfigLoader {
                 // Try classpath first, then file system
                 InputStream is = getClass().getClassLoader().getResourceAsStream(configPath);
                 if (is != null) {
-                    content = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                    try (is) {
+                        content = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                    }
                 } else {
                     content = Files.readString(Path.of(configPath));
                 }
                 Yaml yaml = new Yaml();
                 Map<String, Object> raw = yaml.load(content);
+                if (raw == null) {
+                    raw = new java.util.HashMap<>();
+                }
 
                 // Parse server port
                 int port = 8080;
@@ -72,7 +77,35 @@ public class ConfigLoader {
                     }
                 }
 
-                return new AppConfig(port, servers, tools);
+                // Parse security config (optional)
+                boolean trustAll = false;
+                boolean blockInternal = true;
+                if (mcpObj instanceof Map<?, ?> mcp3) {
+                    Object securityObj = mcp3.get("security");
+                    if (securityObj instanceof Map<?, ?> security) {
+                        Object ta = security.get("trustAll");
+                        if (ta instanceof Boolean b) {
+                            trustAll = b;
+                        }
+                        Object bi = security.get("blockInternal");
+                        if (bi instanceof Boolean b) {
+                            blockInternal = b;
+                        }
+                    }
+                }
+
+                // Parse CORS origins (optional, default "*")
+                List<String> corsOrigins = List.of("*");
+                if (serverObj instanceof Map<?, ?> server2) {
+                    Object corsObj = server2.get("corsOrigins");
+                    if (corsObj instanceof List<?> corsList) {
+                        corsOrigins = corsList.stream()
+                            .map(Object::toString)
+                            .toList();
+                    }
+                }
+
+                return new AppConfig(port, servers, tools, trustAll, blockInternal, corsOrigins);
             } catch (IOException e) {
                 throw new RuntimeException("Failed to load config from " + configPath, e);
             }

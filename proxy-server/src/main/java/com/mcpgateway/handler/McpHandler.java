@@ -76,9 +76,18 @@ public class McpHandler implements Handler<RoutingContext> {
         transport.fetchTools()
             .onSuccess(backendTools -> {
                 JsonArray tools = new JsonArray();
-                // Backend tools first
+                // Collect local tool names for deduplication (local tools take priority)
+                java.util.Set<String> localToolNames = new java.util.HashSet<>();
+                for (ToolConfig tc : stateManager.getToolConfigs()) {
+                    localToolNames.add(tc.name());
+                }
+                // Backend tools first (skip if name conflicts with a local tool)
                 for (var t : backendTools) {
-                    tools.add(t.toJson());
+                    if (localToolNames.contains(t.name())) {
+                        log.warn("Tool name conflict: '{}' exists in both backend and local tools; local tool takes priority", t.name());
+                    } else {
+                        tools.add(t.toJson());
+                    }
                 }
                 // Merge local tools
                 for (ToolConfig tc : stateManager.getToolConfigs()) {
@@ -124,10 +133,11 @@ public class McpHandler implements Handler<RoutingContext> {
                 JsonRpcError.of(-32602, "Missing prompt name")).toJson());
             return;
         }
-        transport.fetchPrompt(promptName)
+        JsonObject arguments = params.getJsonObject("arguments");
+        transport.fetchPrompt(promptName, arguments)
             .onSuccess(prompt -> {
                 if (prompt != null) {
-                    respond(ctx, 200, JsonRpcResponse.success(id, prompt.toJson()).toJson());
+                    respond(ctx, 200, JsonRpcResponse.success(id, prompt).toJson());
                 } else {
                     respond(ctx, 200, JsonRpcResponse.failure(id,
                         JsonRpcError.of(-32602, "Prompt not found: " + promptName)).toJson());
@@ -158,7 +168,7 @@ public class McpHandler implements Handler<RoutingContext> {
                 })
                 .onFailure(err -> {
                     log.error("Local tool execution failed: {}", err.getMessage());
-                    respond(ctx, 500, JsonRpcResponse.failure(id,
+                    respond(ctx, 200, JsonRpcResponse.failure(id,
                         JsonRpcError.of(-32603, "Tool execution failed: " + err.getMessage())).toJson());
                 });
         } else {

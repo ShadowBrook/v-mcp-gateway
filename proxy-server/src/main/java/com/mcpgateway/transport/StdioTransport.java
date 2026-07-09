@@ -31,6 +31,7 @@ public class StdioTransport implements Transport {
     private BufferedWriter stdinWriter;
 
     private final ConcurrentHashMap<Object, Promise<JsonObject>> pendingRequests = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Object, Long> pendingTimers = new ConcurrentHashMap<>();
 
     public StdioTransport(Vertx vertx, ServerConfig config) {
         this.vertx = vertx;
@@ -70,8 +71,16 @@ public class StdioTransport implements Transport {
                 running.set(true);
                 log.info("Stdio transport '{}' started: {}", config.name(), String.join(" ", command));
 
-                // Start reading stdout in a separate thread
-                new Thread(this::readStdout, "stdio-" + config.name() + "-reader").start();
+                // Start reading stdout in a separate daemon thread
+                Thread stdoutThread = new Thread(this::readStdout, "stdio-" + config.name() + "-reader");
+                stdoutThread.setDaemon(true);
+                stdoutThread.start();
+
+                // Start reading stderr in a separate daemon thread to prevent
+                // subprocess deadlock when its stderr buffer fills up.
+                Thread stderrThread = new Thread(this::readStderr, "stdio-" + config.name() + "-stderr");
+                stderrThread.setDaemon(true);
+                stderrThread.start();
 
                 return null;
             } catch (IOException e) {
@@ -103,6 +112,28 @@ public class StdioTransport implements Transport {
             if (running.get()) {
                 log.error("Error reading stdout for '{}': {}", config.name(), e.getMessage());
             }
+        } finally {
+            // Process exited or stdout closed — clean up state
+            running.set(false);
+            cancelAllTimers();
+            pendingRequests.forEach((id, promise) ->
+                promise.fail("Stdio process exited unexpectedly"));
+            pendingRequests.clear();
+            log.warn("Stdio transport '{}' stdout closed", config.name());
+        }
+    }
+
+    private void readStderr() {
+        try (BufferedReader stderrReader = new BufferedReader(
+                new InputStreamReader(process.getErrorStream()))) {
+            String line;
+            while ((line = stderrReader.readLine()) != null) {
+                log.warn("[stdio-{}] {}", config.name(), line);
+            }
+        } catch (IOException e) {
+            if (running.get()) {
+                log.warn("Error reading stderr for '{}': {}", config.name(), e.getMessage());
+            }
         }
     }
 
@@ -113,6 +144,7 @@ public class StdioTransport implements Transport {
             if (id != null) {
                 Promise<JsonObject> promise = pendingRequests.remove(id);
                 if (promise != null) {
+                    removeTimer(id);
                     promise.complete(response);
                 }
             }
@@ -134,6 +166,14 @@ public class StdioTransport implements Transport {
             try {
                 if (id != null) {
                     pendingRequests.put(id, promise);
+                    long timerId = vertx.setTimer(config.timeout(), t -> {
+                        Promise<JsonObject> p = pendingRequests.remove(id);
+                        if (p != null) {
+                            p.fail("Request timed out after " + config.timeout() + "ms");
+                        }
+                        pendingTimers.remove(id);
+                    });
+                    pendingTimers.put(id, timerId);
                 }
 
                 String json = request.encode() + "\n";
@@ -146,11 +186,11 @@ public class StdioTransport implements Transport {
                 }
                 return null;
             } catch (IOException e) {
-                pendingRequests.remove(id);
+                removePending(id);
                 throw new RuntimeException("Failed to write to stdin: " + e.getMessage(), e);
             }
         }).onFailure(err -> {
-            pendingRequests.remove(id);
+            removePending(id);
             promise.fail(err);
         });
 
@@ -160,6 +200,7 @@ public class StdioTransport implements Transport {
     @Override
     public Future<Void> stop() {
         running.set(false);
+        cancelAllTimers();
         pendingRequests.forEach((id, promise) ->
             promise.fail("Transport stopped"));
         pendingRequests.clear();
@@ -185,6 +226,23 @@ public class StdioTransport implements Transport {
             log.info("Stdio transport '{}' stopped", config.name());
             return null;
         });
+    }
+
+    private void removePending(Object id) {
+        pendingRequests.remove(id);
+        removeTimer(id);
+    }
+
+    private void removeTimer(Object id) {
+        Long timerId = pendingTimers.remove(id);
+        if (timerId != null) {
+            vertx.cancelTimer(timerId);
+        }
+    }
+
+    private void cancelAllTimers() {
+        pendingTimers.values().forEach(vertx::cancelTimer);
+        pendingTimers.clear();
     }
 
     @Override

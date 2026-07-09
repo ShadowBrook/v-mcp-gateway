@@ -2,6 +2,7 @@ package com.mcpgateway.transport;
 
 import com.mcpgateway.config.ServerConfig;
 import io.vertx.core.Future;
+import io.vertx.core.Handler;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -23,16 +24,22 @@ public class SseTransport implements Transport {
 
     private static final Logger log = LoggerFactory.getLogger(SseTransport.class);
 
+    private final Vertx vertx;
     private final ServerConfig config;
     private final HttpClient httpClient;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private final ConcurrentHashMap<Object, Promise<JsonObject>> pendingRequests = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Object, Long> pendingTimers = new ConcurrentHashMap<>();
+
+    private volatile Handler<JsonObject> notificationHandler;
+    private volatile Future<Void> cachedStartFuture;
 
     private String backendMessageUrl;
     private String sseUrl;
 
     public SseTransport(Vertx vertx, ServerConfig config) {
+        this.vertx = vertx;
         this.config = config;
         this.httpClient = vertx.createHttpClient();
     }
@@ -48,22 +55,35 @@ public class SseTransport implements Transport {
     }
 
     @Override
-    public Future<Void> start() {
+    public void setNotificationHandler(Handler<JsonObject> handler) {
+        this.notificationHandler = handler;
+    }
+
+    @Override
+    public synchronized Future<Void> start() {
+        if (running.get()) {
+            return Future.succeededFuture();
+        }
+        if (cachedStartFuture != null) {
+            return cachedStartFuture;
+        }
         Promise<Void> promise = Promise.promise();
+        cachedStartFuture = promise.future();
         sseUrl = config.url();
 
         if (sseUrl == null || sseUrl.isBlank()) {
-            return Future.failedFuture("SSE URL is required for SSE transport");
+            promise.fail("SSE URL is required for SSE transport");
+            return cachedStartFuture;
         }
 
         connectSse(sseUrl, promise);
-        return promise.future();
+        return cachedStartFuture;
     }
 
     private void connectSse(String url, Promise<Void> startPromise) {
         try {
             URI uri = URI.create(url);
-            int port = uri.getPort() >= 0 ? uri.getPort() : (uri.getScheme().equals("https") ? 443 : 80);
+            int port = uri.getPort() >= 0 ? uri.getPort() : ("https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80);
             String host = uri.getHost();
             String path = uri.getRawPath();
             if (uri.getRawQuery() != null) {
@@ -75,7 +95,7 @@ public class SseTransport implements Transport {
                 .setHost(host)
                 .setPort(port)
                 .setURI(path)
-                .setSsl(uri.getScheme().equals("https"))
+                .setSsl("https".equalsIgnoreCase(uri.getScheme()))
                 .setFollowRedirects(true);
 
             httpClient.request(options)
@@ -101,6 +121,7 @@ public class SseTransport implements Transport {
     private void handleSseResponse(HttpClientResponse response) {
         StringBuilder lineBuffer = new StringBuilder();
         AtomicReference<String> currentEvent = new AtomicReference<>(null);
+        StringBuilder dataBuffer = new StringBuilder();
 
         response.handler(chunk -> {
             String data = chunk.toString();
@@ -116,6 +137,17 @@ public class SseTransport implements Transport {
 
                 if (line.isEmpty()) {
                     // Empty line = dispatch event boundary
+                    if (dataBuffer.length() > 0) {
+                        String eventData = dataBuffer.toString();
+                        String eventType = currentEvent.get();
+                        if ("endpoint".equals(eventType)) {
+                            backendMessageUrl = eventData;
+                            log.info("SSE transport '{}' received endpoint: {}", config.name(), backendMessageUrl);
+                        } else if ("message".equals(eventType)) {
+                            handleMessageEvent(eventData);
+                        }
+                        dataBuffer.setLength(0);
+                    }
                     currentEvent.set(null);
                     continue;
                 }
@@ -124,21 +156,19 @@ public class SseTransport implements Transport {
                     currentEvent.set(line.substring(6).trim());
                 } else if (line.startsWith("data:")) {
                     String eventData = line.substring(5).trim();
-                    String eventType = currentEvent.get();
-                    if ("endpoint".equals(eventType)) {
-                        backendMessageUrl = eventData;
-                        log.info("SSE transport '{}' received endpoint: {}", config.name(), backendMessageUrl);
-                    } else if ("message".equals(eventType)) {
-                        handleMessageEvent(eventData);
+                    if (dataBuffer.length() > 0) {
+                        dataBuffer.append("\n");
                     }
+                    dataBuffer.append(eventData);
                 }
             }
         });
 
         response.endHandler(v -> {
             if (running.get()) {
-                log.warn("SSE connection for '{}' ended unexpectedly, attempting reconnect", config.name());
+                log.warn("SSE connection for '{}' ended unexpectedly; transport unavailable until new client triggers reconnection", config.name());
                 running.set(false);
+                cancelAllTimers();
                 // Fail all pending requests
                 pendingRequests.forEach((id, promise) ->
                     promise.fail("SSE connection closed"));
@@ -150,6 +180,7 @@ public class SseTransport implements Transport {
             log.error("SSE connection error for '{}': {}", config.name(), err.getMessage());
             if (running.get()) {
                 running.set(false);
+                cancelAllTimers();
                 pendingRequests.forEach((id, promise) ->
                     promise.fail("SSE connection error: " + err.getMessage()));
                 pendingRequests.clear();
@@ -164,7 +195,19 @@ public class SseTransport implements Transport {
             if (id != null) {
                 Promise<JsonObject> promise = pendingRequests.remove(id);
                 if (promise != null) {
+                    Long timerId = pendingTimers.remove(id);
+                    if (timerId != null) {
+                        vertx.cancelTimer(timerId);
+                    }
                     promise.complete(response);
+                }
+            } else {
+                // Notification (no id) — forward to handler
+                Handler<JsonObject> handler = notificationHandler;
+                if (handler != null) {
+                    handler.handle(response);
+                } else {
+                    log.debug("SSE notification dropped (no handler): {}", data);
                 }
             }
         } catch (Exception e) {
@@ -185,6 +228,14 @@ public class SseTransport implements Transport {
         Object id = request.getValue("id");
         if (id != null) {
             pendingRequests.put(id, promise);
+            long timerId = vertx.setTimer(config.timeout(), t -> {
+                Promise<JsonObject> p = pendingRequests.remove(id);
+                if (p != null) {
+                    p.fail("Request timed out after " + config.timeout() + "ms");
+                }
+                pendingTimers.remove(id);
+            });
+            pendingTimers.put(id, timerId);
         }
 
         try {
@@ -192,7 +243,7 @@ public class SseTransport implements Transport {
             String resolvedUrl = resolveUrl(backendMessageUrl);
 
             URI uri = URI.create(resolvedUrl);
-            int port = uri.getPort() >= 0 ? uri.getPort() : (uri.getScheme().equals("https") ? 443 : 80);
+            int port = uri.getPort() >= 0 ? uri.getPort() : ("https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80);
             String host = uri.getHost();
             String path = uri.getRawPath();
             if (uri.getRawQuery() != null) {
@@ -204,7 +255,7 @@ public class SseTransport implements Transport {
                 .setHost(host)
                 .setPort(port)
                 .setURI(path)
-                .setSsl(uri.getScheme().equals("https"))
+                .setSsl("https".equalsIgnoreCase(uri.getScheme()))
                 .setFollowRedirects(true)
                 .putHeader("Content-Type", "application/json");
 
@@ -212,10 +263,15 @@ public class SseTransport implements Transport {
                 .compose(httpReq -> httpReq.send(Buffer.buffer(request.encode())))
                 .onSuccess(httpResp -> {
                     if (httpResp.statusCode() >= 400) {
-                        httpResp.body().onSuccess(body -> {
-                            pendingRequests.remove(id);
-                            promise.fail("Backend returned " + httpResp.statusCode() + ": " + body.toString());
-                        });
+                        httpResp.body()
+                            .onSuccess(body -> {
+                                removePending(id);
+                                promise.tryFail("Backend returned " + httpResp.statusCode() + ": " + body.toString());
+                            })
+                            .onFailure(err -> {
+                                removePending(id);
+                                promise.tryFail("Backend returned " + httpResp.statusCode() + " (body read failed)");
+                            });
                         return;
                     }
                     // For notifications (no id), complete immediately
@@ -227,12 +283,12 @@ public class SseTransport implements Transport {
                     // The promise is already registered in pendingRequests
                 })
                 .onFailure(err -> {
-                    pendingRequests.remove(id);
-                    promise.fail(err);
+                    removePending(id);
+                    promise.tryFail(err);
                 });
         } catch (Exception e) {
-            pendingRequests.remove(id);
-            promise.fail(e);
+            removePending(id);
+            promise.tryFail(e);
         }
 
         return promise.future();
@@ -254,10 +310,25 @@ public class SseTransport implements Transport {
     @Override
     public Future<Void> stop() {
         running.set(false);
+        cachedStartFuture = null;
+        cancelAllTimers();
         pendingRequests.forEach((id, promise) ->
             promise.fail("Transport stopped"));
         pendingRequests.clear();
         return httpClient.close();
+    }
+
+    private void removePending(Object id) {
+        pendingRequests.remove(id);
+        Long timerId = pendingTimers.remove(id);
+        if (timerId != null) {
+            vertx.cancelTimer(timerId);
+        }
+    }
+
+    private void cancelAllTimers() {
+        pendingTimers.values().forEach(vertx::cancelTimer);
+        pendingTimers.clear();
     }
 
     @Override

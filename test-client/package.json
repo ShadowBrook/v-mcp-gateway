@@ -9,7 +9,8 @@
     "stdio": "npx tsx src/stdio-runner.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "marked": "^18.0.5"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.6",

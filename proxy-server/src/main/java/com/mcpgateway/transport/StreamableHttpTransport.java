@@ -63,7 +63,7 @@ public class StreamableHttpTransport implements Transport {
         Promise<JsonObject> promise = Promise.promise();
         try {
             URI uri = URI.create(url);
-            int port = uri.getPort() >= 0 ? uri.getPort() : (uri.getScheme().equals("https") ? 443 : 80);
+            int port = uri.getPort() >= 0 ? uri.getPort() : ("https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80);
             String host = uri.getHost();
             String path = uri.getRawPath();
             if (uri.getRawQuery() != null) {
@@ -75,26 +75,34 @@ public class StreamableHttpTransport implements Transport {
                 .setHost(host)
                 .setPort(port)
                 .setURI(path)
-                .setSsl(uri.getScheme().equals("https"))
+                .setSsl("https".equalsIgnoreCase(uri.getScheme()))
                 .setFollowRedirects(true)
                 .putHeader("Content-Type", "application/json")
                 .putHeader("Accept", "application/json, text/event-stream");
 
-            // Forward backend session ID if we have one
-            String sid = backendSessionId.get();
-            if (sid != null && !sid.isBlank()) {
-                options.putHeader(SESSION_HEADER, sid);
+            String method = request.getString("method");
+            boolean isInitialize = "initialize".equals(method);
+
+            // For initialize, don't send session ID; for others, forward backend session ID
+            if (!isInitialize) {
+                String sid = backendSessionId.get();
+                if (sid != null && !sid.isBlank()) {
+                    options.putHeader(SESSION_HEADER, sid);
+                }
             }
 
             httpClient.request(options)
                 .compose(httpReq -> httpReq.send(Buffer.buffer(request.encode())))
                 .compose(httpResp -> {
-                    // Capture session ID from backend response
-                    String newSid = httpResp.getHeader(SESSION_HEADER);
-                    if (newSid != null && !newSid.isBlank()) {
-                        String oldSid = backendSessionId.getAndSet(newSid);
-                        if (!newSid.equals(oldSid)) {
-                            log.info("Streamable HTTP transport '{}' session ID: {}", config.name(), newSid);
+                    // Only capture session ID from initialize response to avoid
+                    // overwriting with responses from other concurrent clients
+                    if (isInitialize) {
+                        String newSid = httpResp.getHeader(SESSION_HEADER);
+                        if (newSid != null && !newSid.isBlank()) {
+                            String oldSid = backendSessionId.getAndSet(newSid);
+                            if (!newSid.equals(oldSid)) {
+                                log.info("Streamable HTTP transport '{}' session ID: {}", config.name(), newSid);
+                            }
                         }
                     }
 
@@ -132,7 +140,7 @@ public class StreamableHttpTransport implements Transport {
         Promise<Void> promise = Promise.promise();
         try {
             URI uri = URI.create(url);
-            int port = uri.getPort() >= 0 ? uri.getPort() : (uri.getScheme().equals("https") ? 443 : 80);
+            int port = uri.getPort() >= 0 ? uri.getPort() : ("https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80);
             String host = uri.getHost();
             String path = uri.getRawPath();
             if (uri.getRawQuery() != null) {
@@ -144,25 +152,34 @@ public class StreamableHttpTransport implements Transport {
                 .setHost(host)
                 .setPort(port)
                 .setURI(path)
-                .setSsl(uri.getScheme().equals("https"))
+                .setSsl("https".equalsIgnoreCase(uri.getScheme()))
                 .setFollowRedirects(true)
                 .putHeader("Content-Type", "application/json")
                 .putHeader("Accept", "application/json, text/event-stream");
 
-            String sid = backendSessionId.get();
-            if (sid != null && !sid.isBlank()) {
-                options.putHeader(SESSION_HEADER, sid);
+            String method = request.getString("method");
+            boolean isInitialize = "initialize".equals(method);
+
+            // For initialize, don't send session ID; for others, forward backend session ID
+            if (!isInitialize) {
+                String sid = backendSessionId.get();
+                if (sid != null && !sid.isBlank()) {
+                    options.putHeader(SESSION_HEADER, sid);
+                }
             }
 
             httpClient.request(options)
-                .compose(httpReq -> httpReq.send(Buffer.buffer(request.encode())))
+                .compose(httpReq -> httpReq.send(request.encode()))
                 .onSuccess(httpResp -> {
-                    // Capture session ID from backend response
-                    String newSid = httpResp.getHeader(SESSION_HEADER);
-                    if (newSid != null && !newSid.isBlank()) {
-                        String oldSid = backendSessionId.getAndSet(newSid);
-                        if (!newSid.equals(oldSid)) {
-                            log.info("Streamable HTTP transport '{}' session ID: {}", config.name(), newSid);
+                    // Only capture session ID from initialize response to avoid
+                    // overwriting with responses from other concurrent clients
+                    if (isInitialize) {
+                        String newSid = httpResp.getHeader(SESSION_HEADER);
+                        if (newSid != null && !newSid.isBlank()) {
+                            String oldSid = backendSessionId.getAndSet(newSid);
+                            if (!newSid.equals(oldSid)) {
+                                log.info("Streamable HTTP transport '{}' session ID: {}", config.name(), newSid);
+                            }
                         }
                     }
 
@@ -268,6 +285,7 @@ public class StreamableHttpTransport implements Transport {
         Promise<JsonObject> promise = Promise.promise();
         StringBuilder lineBuffer = new StringBuilder();
         AtomicReference<String> currentEvent = new AtomicReference<>(null);
+        StringBuilder dataBuffer = new StringBuilder();
 
         httpResp.handler(chunk -> {
             lineBuffer.append(chunk.toString());
@@ -280,6 +298,22 @@ public class StreamableHttpTransport implements Transport {
 
                 if (line.isEmpty()) {
                     // Empty line = dispatch event boundary
+                    if (!dataBuffer.isEmpty()) {
+                        String eventData = dataBuffer.toString();
+                        String eventType = currentEvent.get();
+                        if ("message".equals(eventType) || eventType == null || eventType.isBlank()) {
+                            try {
+                                JsonObject response = new JsonObject(eventData);
+                                // Only complete on the first valid JSON-RPC message
+                                if (!promise.future().isComplete()) {
+                                    promise.complete(response);
+                                }
+                            } catch (Exception e) {
+                                log.warn("Failed to parse SSE data as JSON: {}", eventData, e);
+                            }
+                        }
+                        dataBuffer.setLength(0);
+                    }
                     currentEvent.set(null);
                     continue;
                 }
@@ -288,18 +322,10 @@ public class StreamableHttpTransport implements Transport {
                     currentEvent.set(line.substring(6).trim());
                 } else if (line.startsWith("data:")) {
                     String eventData = line.substring(5).trim();
-                    String eventType = currentEvent.get();
-                    if ("message".equals(eventType) || eventType == null || eventType.isBlank()) {
-                        try {
-                            JsonObject response = new JsonObject(eventData);
-                            // Only complete on the first valid JSON-RPC message
-                            if (!promise.future().isComplete()) {
-                                promise.complete(response);
-                            }
-                        } catch (Exception e) {
-                            log.warn("Failed to parse SSE data as JSON: {}", eventData, e);
-                        }
+                    if (dataBuffer.length() > 0) {
+                        dataBuffer.append("\n");
                     }
+                    dataBuffer.append(eventData);
                 }
             }
         });
@@ -347,7 +373,7 @@ public class StreamableHttpTransport implements Transport {
         // Now connect to backend asynchronously and pipe its stream
         try {
             URI uri = URI.create(url);
-            int port = uri.getPort() >= 0 ? uri.getPort() : (uri.getScheme().equals("https") ? 443 : 80);
+            int port = uri.getPort() >= 0 ? uri.getPort() : ("https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80);
             String host = uri.getHost();
             String path = uri.getRawPath();
             if (uri.getRawQuery() != null) {
@@ -359,7 +385,7 @@ public class StreamableHttpTransport implements Transport {
                 .setHost(host)
                 .setPort(port)
                 .setURI(path)
-                .setSsl(uri.getScheme().equals("https"))
+                .setSsl("https".equalsIgnoreCase(uri.getScheme()))
                 .setFollowRedirects(true)
                 .putHeader("Accept", "text/event-stream");
 
@@ -373,7 +399,7 @@ public class StreamableHttpTransport implements Transport {
                 .onSuccess(httpResp -> {
                     if (httpResp.statusCode() != 200) {
                         log.warn("Backend GET SSE returned {} for '{}'", httpResp.statusCode(), config.name());
-                        doCleanup(clientResponse, promise);
+                        sendSseErrorAndCleanup(clientResponse, promise, "Backend returned " + httpResp.statusCode());
                         return;
                     }
 
@@ -396,16 +422,28 @@ public class StreamableHttpTransport implements Transport {
                 })
                 .onFailure(err -> {
                     log.error("Failed to connect SSE stream for '{}': {}", config.name(), err.getMessage());
-                    doCleanup(clientResponse, promise);
+                    sendSseErrorAndCleanup(clientResponse, promise, "Backend connection failed: " + err.getMessage());
                 });
         } catch (Exception e) {
             log.error("Invalid URL for '{}': {}", config.name(), e.getMessage());
-            doCleanup(clientResponse, promise);
+            sendSseErrorAndCleanup(clientResponse, promise, "Invalid URL: " + e.getMessage());
         }
 
         return promise.future();
     }
 
+
+    private void sendSseErrorAndCleanup(HttpServerResponse clientResponse, Promise<Void> promise, String errorMessage) {
+        if (!clientResponse.ended()) {
+            try {
+                JsonObject errorEvent = new JsonObject().put("error", errorMessage);
+                clientResponse.write("event: error\ndata: " + errorEvent.encode() + "\n\n");
+            } catch (Exception ignored) {
+                // Response may already be closed
+            }
+        }
+        doCleanup(clientResponse, promise);
+    }
 
     private void doCleanup(HttpServerResponse clientResponse, Promise<Void> promise) {
         if (!clientResponse.ended()) {

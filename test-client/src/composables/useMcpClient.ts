@@ -13,6 +13,7 @@ export interface LogEntry {
   ts: string;
   type: 'info' | 'req' | 'res' | 'err' | 'sys';
   msg: string;
+  streaming?: boolean;
 }
 
 export function useMcpClient() {
@@ -24,6 +25,9 @@ export function useMcpClient() {
   const prompts = ref<any[]>([]);
   const activePromptIdx = ref(-1);
   const logs = ref<LogEntry[]>([]);
+  const activeStreamIds = new Map<number, number>(); // streamId -> log index
+
+  let streamIdCounter = 0;
 
   function addLog(type: LogEntry['type'], msg: string) {
     const ts = new Date().toLocaleTimeString();
@@ -32,6 +36,41 @@ export function useMcpClient() {
 
   function clearLogs() {
     logs.value = [];
+    activeStreamIds.clear();
+  }
+
+  /** Create a streaming log entry; returns a streamId for later updates. */
+  function startStreamLog(type: LogEntry['type'], msg: string): number {
+    const id = ++streamIdCounter;
+    const ts = new Date().toLocaleTimeString();
+    logs.value = [...logs.value, { ts, type, msg, streaming: true }];
+    activeStreamIds.set(id, logs.value.length - 1);
+    return id;
+  }
+
+  /** Append text to a streaming log entry. */
+  function appendStreamLog(id: number, chunk: string) {
+    const idx = activeStreamIds.get(id);
+    if (idx === undefined) return;
+    const entry = logs.value[idx];
+    if (!entry) return;
+    // Mutate in-place then trigger reactivity via array spread
+    entry.msg += chunk;
+    logs.value = [...logs.value];
+  }
+
+  /** Finalize a streaming entry: replace content and mark as done. */
+  function endStreamLog(id: number, finalMsg?: string) {
+    const idx = activeStreamIds.get(id);
+    if (idx === undefined) return;
+    const entry = logs.value[idx];
+    if (!entry) return;
+    if (finalMsg !== undefined) {
+      entry.msg = finalMsg;
+    }
+    entry.streaming = false;
+    logs.value = [...logs.value];
+    activeStreamIds.delete(id);
   }
 
   async function connect(transportType: TransportType, url: string, prefix: string) {
@@ -47,9 +86,15 @@ export function useMcpClient() {
         await c.connect(t);
         // Catch all server-pushed notifications (arrive via GET SSE stream)
         (c as any).fallbackNotificationHandler = async (n: any) => {
-          addLog('res', `Server push: ${n.method} — ${JSON.stringify(n.params ?? {})}`);
+          if (n.method === 'notifications/progress') {
+            const p = n.params?.progress ?? '?';
+            const total = n.params?.total ?? '?';
+            addLog('res', `> Progress: ${p}/${total}`);
+          } else {
+            addLog('res', `Server push: **${n.method}**\n\n\`\`\`json\n${JSON.stringify(n.params ?? {}, null, 2)}\n\`\`\``);
+          }
         };
-        addLog('sys', `Connected, session: ${(t as any).sessionId || '(none)'}`);
+        addLog('sys', `Connected, session: \`${(t as any).sessionId || '(none)'}\``);
         client.value = c;
       } else {
         const sseEndpoint = prefix ? `${base}/${prefix}/sse` : `${base}/sse`;
@@ -58,9 +103,15 @@ export function useMcpClient() {
         const c = new Client({ name: 'mcp-gateway-test', version: '1.0.0' }, CLIENT_OPTIONS);
         await c.connect(t);
         (c as any).fallbackNotificationHandler = async (n: any) => {
-          addLog('res', `Server push: ${n.method} — ${JSON.stringify(n.params ?? {})}`);
+          if (n.method === 'notifications/progress') {
+            const p = n.params?.progress ?? '?';
+            const total = n.params?.total ?? '?';
+            addLog('res', `> Progress: ${p}/${total}`);
+          } else {
+            addLog('res', `Server push: **${n.method}**\n\n\`\`\`json\n${JSON.stringify(n.params ?? {}, null, 2)}\n\`\`\``);
+          }
         };
-        addLog('sys', `Connected via SSE, session: ${(t as any).sessionId || '(none)'}`);
+        addLog('sys', `Connected via SSE, session: \`${(t as any).sessionId || '(none)'}\``);
         client.value = c;
       }
       connected.value = true;
@@ -88,7 +139,7 @@ export function useMcpClient() {
     if (!client.value) return;
     try {
       await client.value.ping();
-      addLog('res', 'Ping OK');
+      addLog('res', 'Ping OK ✅');
     } catch (err: any) {
       addLog('err', `Ping failed: ${err.message}`);
     }
@@ -98,10 +149,11 @@ export function useMcpClient() {
     if (!client.value) return;
     try {
       const result = await client.value.listTools() as ListToolsResult;
-      addLog('res', `Tools (${result.tools.length}):`);
+      const lines: string[] = [`**Tools** (${result.tools.length}):`];
       for (const tool of result.tools) {
-        addLog('res', `  • ${tool.name} — ${tool.description || '(no description)'}`);
+        lines.push(`- **${tool.name}** — ${tool.description || '*(no description)*'}`);
       }
+      addLog('res', lines.join('\n'));
       tools.value = result.tools as any[];
       if (tools.value.length > 0) {
         activeToolIdx.value = 0;
@@ -151,16 +203,35 @@ export function useMcpClient() {
       catch { addLog('err', 'Invalid JSON arguments'); return; }
     }
 
-    addLog('req', `Call: ${name}(${JSON.stringify(args)})`);
+    addLog('req', `Call: **${name}**\n\`\`\`json\n${JSON.stringify(args, null, 2)}\n\`\`\``);
+
+    // Start a streaming log entry — shows progress, then final result
+    const streamId = startStreamLog('res', '⏳ Calling tool...');
+
     try {
-      const result = await client.value.callTool({ name, arguments: args }) as CallToolResult;
+      const result = await client.value.callTool(
+        { name, arguments: args },
+        undefined,
+        {
+          onprogress: (notification: any) => {
+            const p = notification?.params?.progress ?? '?';
+            const total = notification?.params?.total ?? '?';
+            appendStreamLog(streamId, `\n\n> 📊 Progress: **${p}/${total}**`);
+          },
+        } as any,
+      ) as CallToolResult;
+
       const text = result.content
         .filter(c => c.type === 'text')
         .map(c => (c as any).text)
         .join('\n');
-      addLog('res', `Result: ${text || '(empty)'}`);
+
+      const md = result.isError
+        ? `❌ **Tool Error**\n\n${text || '(empty)'}`
+        : (text || '(empty)');
+      endStreamLog(streamId, md);
     } catch (err: any) {
-      addLog('err', `Call failed: ${err.message}`);
+      endStreamLog(streamId, `❌ **Call failed**: ${err.message}`);
     }
   }
 
@@ -168,11 +239,12 @@ export function useMcpClient() {
     if (!client.value) return;
     try {
       const result = await client.value.listPrompts() as ListPromptsResult;
-      addLog('res', `Prompts (${result.prompts.length}):`);
+      const lines: string[] = [`**Prompts** (${result.prompts.length}):`];
       for (const p of result.prompts) {
         const argc = p.arguments?.length ?? 0;
-        addLog('res', `  • ${p.name} — ${p.description || '(no description)'} [${argc} args]`);
+        lines.push(`- **${p.name}** — ${p.description || '*(no description)*'} \`${argc} args\``);
       }
+      addLog('res', lines.join('\n'));
       prompts.value = result.prompts as any[];
       if (prompts.value.length > 0) {
         activePromptIdx.value = 0;
@@ -205,18 +277,26 @@ export function useMcpClient() {
       catch { addLog('err', 'Invalid JSON arguments'); return; }
     }
 
-    addLog('req', `Get prompt: ${name}${args ? `(${JSON.stringify(args)})` : ''}`);
+    addLog('req', `Get prompt: **${name}**${args ? `\n\`\`\`json\n${JSON.stringify(args, null, 2)}\n\`\`\`` : ''}`);
     try {
       const result = await client.value.getPrompt({ name, arguments: args }) as GetPromptResult;
+      const lines: string[] = [];
       if (result.description) {
-        addLog('res', `Description: ${result.description}`);
+        lines.push(`> ${result.description}`);
+        lines.push('');
       }
-      addLog('res', `Messages (${result.messages.length}):`);
+      lines.push(`**Messages** (${result.messages.length}):`);
+      lines.push('');
       for (const msg of result.messages) {
         const content = msg.content as any;
-        const text = content.type === 'text' ? content.text : `[${content.type}]`;
-        addLog('res', `  [${msg.role}] ${text}`);
+        const text = content.type === 'text' ? content.text : `*[${content.type}]*`;
+        lines.push(`**[${msg.role}]**`);
+        lines.push('');
+        lines.push(text);
+        lines.push('');
+        lines.push('---');
       }
+      addLog('res', lines.join('\n'));
     } catch (err: any) {
       addLog('err', `Get prompt failed: ${err.message}`);
     }
@@ -226,6 +306,7 @@ export function useMcpClient() {
     client, connected, error, tools, activeToolIdx, prompts, activePromptIdx, logs,
     connect, disconnect, ping, listTools, selectTool, callTool,
     listPrompts, selectPrompt, getPrompt, promptArgsToTemplate,
-    schemaToTemplate, addLog, clearLogs
+    schemaToTemplate, addLog, clearLogs,
+    startStreamLog, appendStreamLog, endStreamLog,
   };
 }
